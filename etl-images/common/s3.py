@@ -20,6 +20,8 @@ class S3FileHandler:
             aws_secret_access_key=self.s3_secret_key,
         )
 
+        s3.upload_file(local_file_path, self.s3_bucket, s3_key)
+
     def upload_from_memory(self, file_obj, s3_key):
         s3 = boto3.client(
             "s3",

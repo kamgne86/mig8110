@@ -4,7 +4,7 @@ import zipfile
 import requests
 import pandas as pd
 from io import BytesIO
-from s3 import S3FileHandler
+from common.s3 import S3FileHandler
 
 logging.basicConfig(level=logging.INFO)
 

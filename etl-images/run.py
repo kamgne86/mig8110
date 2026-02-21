@@ -1,5 +1,5 @@
 import click
-from full_load import handle as initial_load
+from commands.full_load import handle as initial_load
 from arguments import command, url, output_file_key
 
 
