@@ -25,21 +25,8 @@ output_file_key = click.option(
     help='Output file key in S3'
 )
 
-columns = click.option(
-    '--columns',
-    type=str,
-    help='Columns to process'
-)
-
 table_name = click.option(
     '--table_name',
     type=str,
-    help='PostgreSQL table name to load data into'
-)
-
-if_exists = click.option(
-    '--if_exists',
-    type=click.Choice(['replace', 'append']),
-    default='append',
-    help='How to behave if the table exists'
+    help='MotherDuck table name to load data into'
 )
