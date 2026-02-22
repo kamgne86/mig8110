@@ -9,6 +9,8 @@ pandas = "==3.0.1"
 boto3 = "==1.42.54"
 requests = "==2.32.5"
 pyarrow = "==23.0.1"
+sqlalchemy = "==2.0.46"
+psycopg2-binary = "==2.9.11"
 
 [dev-packages]
 pytest = "==9.0.2"

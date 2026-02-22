@@ -41,3 +41,19 @@ class S3FileHandler:
         )
 
         s3.download_file(self.s3_bucket, s3_key, local_file_path)
+
+    def download_to_memory(self, s3_key):
+        """Télécharge un fichier depuis S3 en mémoire et retourne un BytesIO"""
+        from io import BytesIO
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=self.s3_endpoint,
+            aws_access_key_id=self.s3_access_key,
+            aws_secret_access_key=self.s3_secret_key,
+        )
+        
+        file_obj = BytesIO()
+        s3.download_fileobj(self.s3_bucket, s3_key, file_obj)
+        file_obj.seek(0)
+        return file_obj
+
