@@ -4,11 +4,11 @@ import zipfile
 import pandas as pd
 from io import BytesIO
 from unittest.mock import Mock, patch
-from commands.full_load import handle
+from commands.extract_data import handle
 
 
 class TestFullLoad:
-    """Tests for full_load command"""
+    """Tests for extract data command"""
 
     @pytest.fixture
     def mock_env_vars(self):
@@ -47,7 +47,7 @@ class TestFullLoad:
         output_key = "test_output.parquet"
 
         with patch("requests.get") as mock_get, \
-             patch("commands.full_load.S3FileHandler") as mock_s3:
+             patch("commands.extract_data.S3FileHandler") as mock_s3:
             
             # Mock HTTP response
             mock_response = Mock()
