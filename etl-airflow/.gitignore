@@ -50,7 +50,7 @@ coverage.xml
 .hypothesis/
 
 # Kubernetes configuration
-.kube/
+include/.kube/config
 .pytest_cache/
 cover/
 
