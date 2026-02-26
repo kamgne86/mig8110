@@ -1,5 +1,6 @@
 import datetime
 from airflow.models import DAG
+from airflow.operators.empty import EmptyOperator
 from plugins.operators.duckdb_operator import DuckDBOperator
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
@@ -32,10 +33,14 @@ duckdb_env_vars = {
     "DUCKDB_DB": "{{ conn.duckdb_default.schema }}",
     }
 
-SCHEMA_NAME="mig8110"
-TABLE_NAME="anada_products"
+SCHEMA_NAME="off"
+RAW_TABLE_NAME="canada_products"
+NUTRITIONS_TABLE_NAME="nutritions"
+PRODUCT_COVERS_TABLE_NAME="product_covers"
 
 with dag:
+
+    start = EmptyOperator(task_id='start')
 
     create_schema = DuckDBOperator(
         dag=dag,
@@ -64,9 +69,51 @@ with dag:
         arguments=[
             "--command", "load_data",
             "--input_file_key", "data.parquet",
-            "--table_name", TABLE_NAME
+            "--table_name", RAW_TABLE_NAME
             ]
         )
     
+    create_nutritions_table = DuckDBOperator(
+        dag=dag,
+        task_id='create-nutritions-table',
+        sql=f"""
+        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{NUTRITIONS_TABLE_NAME} AS
+        SELECT
+            code,
+            n.name,
+            n.value,
+            n."100g"   AS value_100g,
+            n.serving  AS value_serving,
+            n.unit
+        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
+        CROSS JOIN UNNEST(nutriments) AS t(n)
+        """,
+        duckdb_conn_id='duckdb_default'
+        )
+    
+    create_product_covers_table = DuckDBOperator(
+        dag=dag,
+        task_id='create-product-covers-table',
+        sql=f"""
+        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{PRODUCT_COVERS_TABLE_NAME} AS
+        SELECT 
+            CAST(code AS VARCHAR) as code_str,
+            CONCAT(
+                'https://images.openfoodfacts.org/images/products/',
+                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 1, 3), '/',
+                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 4, 3), '/',
+                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 7, 3), '/',
+                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 10, 4), '/',
+                'front_en.',
+                (list_filter(images, x -> x.key = 'front_en')[1].rev)::INTEGER,
+                '.400.jpg'
+            ) as url_front_en_400px
+        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
+        WHERE array_length(list_filter(images, x -> x.key = 'front_en')) > 0
+        """,
+        duckdb_conn_id='duckdb_default'
+        )
+    
+    end = EmptyOperator(task_id='end')
 
-    create_schema >> extract_data >> load_data
+    start >> create_schema >> extract_data >> load_data >> [create_nutritions_table, create_product_covers_table] >> end
