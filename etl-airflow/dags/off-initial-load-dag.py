@@ -70,7 +70,8 @@ with dag:
         arguments=[
             "--command", "load_data",
             "--input_file_key", "data.parquet",
-            "--table_name", RAW_TABLE_NAME
+            "--table_name", RAW_TABLE_NAME,
+            "--schema_name", SCHEMA_NAME
             ]
         )
     
