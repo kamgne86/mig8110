@@ -37,6 +37,7 @@ SCHEMA_NAME="off"
 RAW_TABLE_NAME="canada_products"
 NUTRITIONS_TABLE_NAME="nutritions"
 PRODUCT_COVERS_TABLE_NAME="product_covers"
+PRODUCTS_TABLE_NAME="products"
 
 with dag:
 
@@ -114,6 +115,26 @@ with dag:
         duckdb_conn_id='duckdb_default'
         )
     
+    create_products_table = DuckDBOperator(
+        dag=dag,
+        task_id='create-products-table',
+        sql=f"""
+        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
+        SELECT
+            code,
+            product_name,
+            brands,
+            categories,
+            categories_tags,
+            nutriscore_score,
+            nutriscore_grade,
+            ingredients_text,
+            ingredients_tags
+        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
+        """,
+        duckdb_conn_id='duckdb_default'
+        )
+    
     end = EmptyOperator(task_id='end')
 
-    start >> create_schema >> extract_data >> load_data >> [create_nutritions_table, create_product_covers_table] >> end
+    start >> create_schema >> extract_data >> load_data >> [create_nutritions_table, create_product_covers_table, create_products_table] >> end
