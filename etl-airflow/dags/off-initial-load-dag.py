@@ -123,14 +123,13 @@ with dag:
         CREATE OR REPLACE TABLE {SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
         SELECT
             code,
-            product_name,
+            product_name[1].text AS product_name,
             brands,
             categories,
             categories_tags,
             nutriscore_score,
             nutriscore_grade,
-            ingredients_text,
-            ingredients_tags
+            list_transform(ingredients_tags, x -> regexp_replace(x, '^[a-z]+:', '')) AS ingredients
         FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
         """,
         duckdb_conn_id='duckdb_default'
