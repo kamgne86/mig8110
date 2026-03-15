@@ -33,11 +33,9 @@ duckdb_env_vars = {
     "DUCKDB_DB": "{{ conn.duckdb_default.schema }}",
     }
 
-SCHEMA_NAME="off"
-RAW_TABLE_NAME="canada_products"
-NUTRITIONS_TABLE_NAME="nutritions"
-PRODUCT_COVERS_TABLE_NAME="product_covers"
-PRODUCTS_TABLE_NAME="products"
+DATABASE_NAME="off"
+SCHEMA_NAME="raw"
+RAW_TABLE_NAME="raw_canada_products"
 
 with dag:
 
@@ -46,7 +44,7 @@ with dag:
     create_schema = DuckDBOperator(
         dag=dag,
         task_id='create-schema',
-        sql=f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}",
+        sql=f"CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{SCHEMA_NAME}",
         duckdb_conn_id='duckdb_default'
         )
     
@@ -71,70 +69,10 @@ with dag:
             "--command", "load_data",
             "--input_file_key", "data.parquet",
             "--table_name", RAW_TABLE_NAME,
-            "--schema_name", SCHEMA_NAME
+            "--schema_name", f"{DATABASE_NAME}.{SCHEMA_NAME}"
             ]
-        )
-    
-    create_nutritions_table = DuckDBOperator(
-        dag=dag,
-        task_id='create-nutritions-table',
-        sql=f"""
-        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{NUTRITIONS_TABLE_NAME} AS
-        SELECT
-            code,
-            n.name,
-            n.value,
-            n."100g"   AS value_100g,
-            n.serving  AS value_serving,
-            n.unit
-        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
-        CROSS JOIN UNNEST(nutriments) AS t(n)
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-    
-    create_product_covers_table = DuckDBOperator(
-        dag=dag,
-        task_id='create-product-covers-table',
-        sql=f"""
-        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{PRODUCT_COVERS_TABLE_NAME} AS
-        SELECT 
-            CAST(code AS VARCHAR) as code_str,
-            CONCAT(
-                'https://images.openfoodfacts.org/images/products/',
-                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 1, 3), '/',
-                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 4, 3), '/',
-                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 7, 3), '/',
-                SUBSTR(LPAD(CAST(code AS VARCHAR), 13, '0'), 10, 4), '/',
-                'front_en.',
-                (list_filter(images, x -> x.key = 'front_en')[1].rev)::INTEGER,
-                '.400.jpg'
-            ) as url_front_en_400px
-        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
-        WHERE array_length(list_filter(images, x -> x.key = 'front_en')) > 0
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-    
-    create_products_table = DuckDBOperator(
-        dag=dag,
-        task_id='create-products-table',
-        sql=f"""
-        CREATE OR REPLACE TABLE {SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
-        SELECT
-            code,
-            product_name[1].text AS product_name,
-            brands,
-            categories,
-            categories_tags,
-            nutriscore_score,
-            nutriscore_grade,
-            list_transform(ingredients_tags, x -> regexp_replace(x, '^[a-z]+:', '')) AS ingredients
-        FROM {SCHEMA_NAME}.{RAW_TABLE_NAME}
-        """,
-        duckdb_conn_id='duckdb_default'
         )
     
     end = EmptyOperator(task_id='end')
 
-    start >> create_schema >> extract_data >> load_data >> [create_nutritions_table, create_product_covers_table, create_products_table] >> end
+    start >> create_schema >> extract_data >> load_data >> end
