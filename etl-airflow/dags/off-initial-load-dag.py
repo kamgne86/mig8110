@@ -44,7 +44,7 @@ with dag:
     create_schema = DuckDBOperator(
         dag=dag,
         task_id='create-schema',
-        sql=f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}",
+        sql=f"CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{SCHEMA_NAME}",
         duckdb_conn_id='duckdb_default'
         )
     
@@ -69,7 +69,7 @@ with dag:
             "--command", "load_data",
             "--input_file_key", "data.parquet",
             "--table_name", RAW_TABLE_NAME,
-            "--schema_name", SCHEMA_NAME
+            "--schema_name", f"{DATABASE_NAME}.{SCHEMA_NAME}"
             ]
         )
     
