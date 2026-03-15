@@ -27,14 +27,12 @@ output_file_key = click.option(
 
 table_name = click.option(
     '--table_name',
-    required=True,
     type=str,
     help='MotherDuck table name to load data into'
 )
 
 schema_name = click.option(
     '--schema_name',
-    required=True,
     type=str,
     help='DuckDB schema name'
 )
