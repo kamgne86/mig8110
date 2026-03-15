@@ -30,3 +30,9 @@ table_name = click.option(
     type=str,
     help='MotherDuck table name to load data into'
 )
+
+schema_name = click.option(
+    '--schema_name',
+    type=str,
+    help='DuckDB schema name'
+)
