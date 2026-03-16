@@ -35,8 +35,8 @@ duckdb_env_vars = {
 
 DATABASE_NAME="off"
 SCHEMA_NAME="raw"
-DELTA_TABLE_NAME="delta_canada_products"
-DELTA_FILE_KEY="delta.parquet"
+DELTA_TABLE_NAME="raw_delta_canada_products"
+DELTA_FILE_KEY="delta.jsonl"
 
 with dag:
 
@@ -67,7 +67,7 @@ with dag:
         image="mig8110/etl-images:1.0.0",
         env_vars={**s3_env_vars, **duckdb_env_vars},
         arguments=[
-            "--command", "load_data",
+            "--command", "load_delta",
             "--input_file_key", DELTA_FILE_KEY,
             "--table_name", DELTA_TABLE_NAME,
             "--schema_name", f"{DATABASE_NAME}.{SCHEMA_NAME}"
