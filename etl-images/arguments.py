@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'load_data', 'extract_delta']),
+    type=click.Choice(['extract_data', 'load_data', 'extract_delta', 'load_delta']),
     help='Command to execute'
 )
 
