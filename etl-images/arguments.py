@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'load_data']),
+    type=click.Choice(['extract_data', 'load_data', 'extract_delta']),
     help='Command to execute'
 )
 
@@ -35,4 +35,11 @@ schema_name = click.option(
     '--schema_name',
     type=str,
     help='DuckDB schema name'
+)
+
+num_files = click.option(
+    '--num_files',
+    type=int,
+    default=None,
+    help='Number of most recent delta files to process (default: all)'
 )
