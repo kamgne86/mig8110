@@ -1,5 +1,6 @@
 import click
 from commands.load_data import handle as load_data
+from commands.load_delta import handle as load_delta
 from commands.extract_data import handle as extract_data
 from commands.extract_delta import handle as extract_delta
 from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files
@@ -20,6 +21,8 @@ def main(command, output_file_key, url, input_file_key, table_name, schema_name,
         load_data(input_file_key, table_name, schema_name)
     elif command == "extract_delta":
         extract_delta(output_file_key, url, num_files)
+    elif command == "load_delta":
+        load_delta(input_file_key, table_name, schema_name)
 
         
 if __name__ == '__main__':
