@@ -35,7 +35,9 @@ duckdb_env_vars = {
 
 DATABASE_NAME="off"
 SCHEMA_NAME="raw"
+SOURCE_TABLE_NAME="canada_products"
 DELTA_TABLE_NAME="delta_canada_products"
+PRODUCTS_TABLE_NAME="products"
 DELTA_FILE_KEY="delta.jsonl"
 
 with dag:
@@ -73,7 +75,61 @@ with dag:
             "--schema_name", f"{DATABASE_NAME}.{SCHEMA_NAME}"
             ]
         )
+
+    # TODO: add product_name, images, ingredients, nutriments (incompatible struct types between tables)
+    # Upsert: update existing products by code, insert new ones
+    merge_delta = DuckDBOperator(
+        dag=dag,
+        task_id='merge-delta',
+        sql=f"""
+            CREATE TABLE IF NOT EXISTS {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
+                SELECT code, brands, product_quantity, product_quantity_unit,
+                       quantity, serving_quantity, serving_size,
+                       categories_tags, countries_tags,
+                       ecoscore_score, ecoscore_grade,
+                       ingredients_tags,
+                       nutriscore_score, nutriscore_grade
+                FROM {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME};
+
+            MERGE INTO {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS target
+            USING (
+                SELECT code, brands, product_quantity, product_quantity_unit,
+                       quantity, serving_quantity, serving_size,
+                       categories_tags, countries_tags,
+                       ecoscore_score, ecoscore_grade,
+                       ingredients_tags,
+                       nutriscore_score, nutriscore_grade
+                FROM {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME}
+            ) AS source
+            ON target.code = source.code
+            WHEN MATCHED THEN UPDATE SET
+                brands = source.brands,
+                product_quantity = source.product_quantity, product_quantity_unit = source.product_quantity_unit,
+                quantity = source.quantity, serving_quantity = source.serving_quantity,
+                serving_size = source.serving_size, categories_tags = source.categories_tags,
+                countries_tags = source.countries_tags, ecoscore_score = source.ecoscore_score,
+                ecoscore_grade = source.ecoscore_grade,
+                ingredients_tags = source.ingredients_tags,
+                nutriscore_score = source.nutriscore_score, nutriscore_grade = source.nutriscore_grade
+            WHEN NOT MATCHED THEN INSERT (
+                code, brands, product_quantity, product_quantity_unit,
+                quantity, serving_quantity, serving_size,
+                categories_tags, countries_tags,
+                ecoscore_score, ecoscore_grade,
+                ingredients_tags,
+                nutriscore_score, nutriscore_grade
+            ) VALUES (
+                source.code, source.brands, source.product_quantity, source.product_quantity_unit,
+                source.quantity, source.serving_quantity, source.serving_size,
+                source.categories_tags, source.countries_tags,
+                source.ecoscore_score, source.ecoscore_grade,
+                source.ingredients_tags,
+                source.nutriscore_score, source.nutriscore_grade
+            );
+        """,
+        duckdb_conn_id='duckdb_default'
+        )
     
     end = EmptyOperator(task_id='end')
 
-    start >> create_schema >> extract_delta >> load_delta >> end
+    start >> create_schema >> extract_delta >> load_delta >> merge_delta >> end
