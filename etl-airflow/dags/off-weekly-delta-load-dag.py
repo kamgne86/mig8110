@@ -77,7 +77,7 @@ with dag:
         )
 
     # TODO: add product_name, images, ingredients, nutriments (incompatible struct types between tables)
-    # Rebuild products from full source, then upsert delta
+    # Upsert: update existing products by code, insert new ones
     merge_delta = DuckDBOperator(
         dag=dag,
         task_id='merge-delta',
