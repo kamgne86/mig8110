@@ -77,12 +77,12 @@ with dag:
         )
 
     # TODO: add product_name, images, ingredients, nutriments (incompatible struct types between tables)
-    # Upsert: update existing products by code, insert new ones
+    # Rebuild products from full source, then upsert delta
     merge_delta = DuckDBOperator(
         dag=dag,
         task_id='merge-delta',
         sql=f"""
-            CREATE TABLE IF NOT EXISTS {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
+            CREATE OR REPLACE TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
                 SELECT code, brands, product_quantity, product_quantity_unit,
                        quantity, serving_quantity, serving_size,
                        categories_tags, countries_tags,
