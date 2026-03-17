@@ -35,7 +35,7 @@ duckdb_env_vars = {
 
 DATABASE_NAME="off"
 SCHEMA_NAME="raw"
-RAW_TABLE_NAME="raw_canada_products"
+RAW_TABLE_NAME="canada_products"
 
 with dag:
 
