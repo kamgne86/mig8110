@@ -35,7 +35,7 @@ duckdb_env_vars = {
 
 DATABASE_NAME="off"
 SCHEMA_NAME="raw"
-DELTA_TABLE_NAME="raw_delta_canada_products"
+DELTA_TABLE_NAME="delta_canada_products"
 DELTA_FILE_KEY="delta.jsonl"
 
 with dag:
