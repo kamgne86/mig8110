@@ -219,7 +219,7 @@ with dag:
     # Transform product_name: extract main text from canada_products (delta is already VARCHAR)
     transform_product_name = DuckDBOperator(
         dag=dag,
-        task_id='transform-product-name',
+        task_id='transform-product-name-source',
         sql=f"""
             ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS product_name_text VARCHAR;
             UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} SET
