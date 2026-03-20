@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OFF Canada - Recherche Produits</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <h1>Recherche Produits Canada</h1>
+    
+    <div class="search-container">
+        <input type="text" id="searchName" placeholder="Nom du produit (ex: milk, syrup...)">
+        <input type="text" id="searchBrand" placeholder="Marque (ex: Kroger)">
+        <button onclick="searchProducts()">Rechercher</button>
+        <button onclick="clearFilters()">Effacer</button>
+    </div>
+
+    <div id="stats" class="stats" style="display: none;"></div>
+    <div id="error" class="error" style="display: none;"></div>
+    <div id="results" class="loading">Cliquez sur Rechercher pour voir les produits...</div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
