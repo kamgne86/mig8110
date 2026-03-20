@@ -45,7 +45,6 @@ function displayResults(products) {
                     <div style="color: #666; font-size: 0.95em;">${p.brands || 'Sans marque'}</div>
                     <div class="grades">
                         ${p.nutriscore_grade ? `<span class="grade nutriscore-${p.nutriscore_grade.toLowerCase()}">${p.nutriscore_grade}</span>` : ''}
-                        ${p.ecoscore_grade ? `<span class="grade">E:${p.ecoscore_grade}</span>` : ''}
                     </div>
                     <div style="margin: 10px 0;">${p.energy_kcal_100g ? Math.round(p.energy_kcal_100g) + ' kcal/100g' : 'N/A'}</div>
                     ${p.front_url ? `<img src="${p.front_url}" alt="Photo" style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px;">` : ''}
