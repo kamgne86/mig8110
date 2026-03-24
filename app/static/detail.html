@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
   <link rel="stylesheet" href="/static/css/style.css" />
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
   <div class="page">
@@ -36,14 +37,14 @@
 
         <h3 class="detail-section-title">Infos Nutritionnelles (pour 100g)</h3>
         <ul class="nutrition-details">
-          <li>🔥 Calories : <span id="calories">—</span></li>
-          <li>🍬 Sucres : <span id="sugars">—</span></li>
-          <li>🧂 Sel : <span id="salt">—</span></li>
-          <li>🫒 Lipides : <span id="fat">—</span></li>
-          <li>🥩 Acides gras saturés : <span id="saturated">—</span></li>
-          <li>💪 Protéines : <span id="proteins">—</span></li>
-          <li>🌾 Glucides : <span id="carbs">—</span></li>
-          <li>🌿 Fibres : <span id="fiber">—</span></li>
+          <li><i data-lucide="flame"         class="nutri-icon"></i> Calories : <span id="calories">—</span></li>
+          <li><i data-lucide="candy"          class="nutri-icon"></i> Sucres : <span id="sugars">—</span></li>
+          <li><i data-lucide="circle-dot"     class="nutri-icon"></i> Sel : <span id="salt">—</span></li>
+          <li><i data-lucide="droplets"       class="nutri-icon"></i> Lipides : <span id="fat">—</span></li>
+          <li><i data-lucide="activity"       class="nutri-icon"></i> Acides gras saturés : <span id="saturated">—</span></li>
+          <li><i data-lucide="dumbbell"       class="nutri-icon"></i> Protéines : <span id="proteins">—</span></li>
+          <li><i data-lucide="wheat"          class="nutri-icon"></i> Glucides : <span id="carbs">—</span></li>
+          <li><i data-lucide="leaf"           class="nutri-icon"></i> Fibres : <span id="fiber">—</span></li>
         </ul>
 
         <div class="separator"></div>
@@ -167,7 +168,7 @@
       pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
     }
 
-    loadProduct();
+    loadProduct().then(() => lucide.createIcons());
   </script>
 </body>
 </html>

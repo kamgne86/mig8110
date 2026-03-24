@@ -11,5 +11,8 @@ TABLE_NAME = "raw.products"
 if not DUCKDB_TOKEN or not DUCKDB_DB:
     raise RuntimeError("DUCKDB_TOKEN et/ou DUCKDB_DB manquants dans .env")
 
-conn_str = f"md:{DUCKDB_DB}?motherduck_token={DUCKDB_TOKEN}"
-db = duckdb.connect(conn_str, read_only=True)
+CONN_STR = f"md:{DUCKDB_DB}?motherduck_token={DUCKDB_TOKEN}"
+
+def get_conn() -> duckdb.DuckDBPyConnection:
+    """Retourne une nouvelle connexion DuckDB à chaque appel (thread-safe)."""
+    return duckdb.connect(CONN_STR, read_only=True)
