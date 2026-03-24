@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Détail produit</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="page">
+    <div class="detail-panel panel">
+      <div class="detail-header panel-header">
+        <a href="/static/index.html" class="back-arrow">←</a>
+        <h1 id="name">Chargement…</h1>
+      </div>
+
+      <div class="detail-body panel-body">
+        <p class="detail-meta">
+          <strong id="brand">—</strong>
+          <span> | </span>
+          <span id="category">—</span>
+        </p>
+
+        <div class="scores-row">
+          <div class="score-line">
+            <span class="nutri-label">Nutri-Score</span>
+            <span class="nutri-score" id="nutriScore">—</span>
+          </div>
+          <div class="score-line">
+            <span class="nutri-label eco">Éco-Score</span>
+            <span class="nutri-score eco" id="ecoScore">—</span>
+          </div>
+        </div>
+
+        <div class="separator"></div>
+
+        <h3 class="detail-section-title">Infos Nutritionnelles (pour 100g)</h3>
+        <ul class="nutrition-details">
+          <li>🔥 Calories : <span id="calories">—</span></li>
+          <li>🍬 Sucres : <span id="sugars">—</span></li>
+          <li>🧂 Sel : <span id="salt">—</span></li>
+          <li>🫒 Lipides : <span id="fat">—</span></li>
+          <li>🥩 Acides gras saturés : <span id="saturated">—</span></li>
+          <li>💪 Protéines : <span id="proteins">—</span></li>
+          <li>🌾 Glucides : <span id="carbs">—</span></li>
+          <li>🌿 Fibres : <span id="fiber">—</span></li>
+        </ul>
+
+        <div class="separator"></div>
+
+        <h3 class="detail-section-title">Ingrédients</h3>
+        <div class="ingredients-row">
+          <div class="ingredients-text" id="ingredients">—</div>
+          <div class="detail-image-box" id="imageBox">
+            <span>IMAGE</span>
+          </div>
+        </div>
+
+        <div id="rawJsonSection" style="display:none; margin-top:20px;">
+          <div class="separator"></div>
+          <h3 class="detail-section-title">
+            <button class="small-btn" onclick="toggleRaw()">Voir données brutes ▼</button>
+          </h3>
+          <pre id="rawJson" style="display:none; background:#f8fafc; padding:14px; border-radius:8px; overflow:auto; font-size:12px; color:#475467;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '';  // même origine que le backend FastAPI
+
+    async function loadProduct() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+
+      if (!code) {
+        // fallback: données passées en query string (depuis comparaison)
+        fillFromParams(params);
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/products/${code}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const p = await res.json();
+        fillFromProduct(p);
+      } catch (e) {
+        document.getElementById('name').textContent = 'Erreur de chargement';
+        console.error(e);
+      }
+    }
+
+    function val(v, unit = '', decimals = 2) {
+      if (v === null || v === undefined || v === '') return '—';
+      return (Math.round(v * 100) / 100).toFixed(decimals) + (unit ? ' ' + unit : '');
+    }
+
+    /**
+     * Parse un champ "categories_tags" ou "ingredients_tags" au format liste Python :
+     * "['en:foo-bar', 'fr:baz']"  →  "foo bar, baz"
+     */
+    function parseTags(raw, maxItems = null) {
+      if (!raw) return '—';
+      let tags = [];
+      if (Array.isArray(raw)) {
+        tags = raw;
+      } else if (typeof raw === 'string') {
+        if (raw === '[]' || raw.trim() === '') return '—';
+        tags = [...raw.matchAll(/'([^']+)'/g)].map(m => m[1]);
+      }
+      let labels = tags.map(t => t.replace(/^[a-z]{2}:/, '').replace(/-/g, ' '));
+      if (maxItems) labels = labels.slice(0, maxItems);
+      return labels.join(', ') || '—';
+    }
+
+    function validGrade(grade) {
+      if (!grade) return null;
+      const g = grade.toLowerCase();
+      return ['a','b','c','d','e'].includes(g) ? g : null;
+    }
+
+    function fillFromProduct(p) {
+      document.title = p.product_name || 'Détail produit';
+      document.getElementById('name').textContent  = p.product_name || 'Sans nom';
+      document.getElementById('brand').textContent = p.brands || '—';
+
+      // categories_tags : "['en:sweeteners', 'en:syrups']" → on prend les 3 premières
+      document.getElementById('category').textContent = parseTags(p.categories_tags, 3);
+
+      // Nutri-Score
+      const nsGrade = validGrade(p.nutriscore_grade);
+      const ns = document.getElementById('nutriScore');
+      ns.textContent = nsGrade ? nsGrade.toUpperCase() : '—';
+      ns.className   = nsGrade ? `nutri-score ns-${nsGrade}` : 'nutri-score';
+
+      // Éco-Score
+      const esGrade = validGrade(p.ecoscore_grade);
+      const es = document.getElementById('ecoScore');
+      es.textContent = esGrade ? esGrade.toUpperCase() : '—';
+      es.className   = esGrade ? `nutri-score eco es-${esGrade}` : 'nutri-score eco';
+
+      document.getElementById('calories').textContent  = val(p.energy_kcal_100g, 'kcal', 0);
+      document.getElementById('sugars').textContent    = val(p.sugars_100g, 'g');
+      document.getElementById('salt').textContent      = val(p.salt_100g, 'g');
+      document.getElementById('fat').textContent       = val(p.fat_100g, 'g');
+      document.getElementById('saturated').textContent = val(p.saturated_fat_100g, 'g');
+      document.getElementById('proteins').textContent  = val(p.proteins_100g, 'g');
+      document.getElementById('carbs').textContent     = val(p.carbohydrates_100g, 'g');
+      document.getElementById('fiber').textContent     = val(p.fiber_100g, 'g');
+
+      // Ingrédients : pas de champ texte libre → on parse ingredients_tags
+      document.getElementById('ingredients').textContent = parseTags(p.ingredients_tags);
+
+      if (p.front_url) {
+        const box = document.getElementById('imageBox');
+        box.innerHTML = `<img src="${p.front_url}" alt="Photo produit" style="width:100%;height:100%;object-fit:cover;border-radius:12px;">`;
+      }
+
+      // Données brutes
+      document.getElementById('rawJsonSection').style.display = 'block';
+      document.getElementById('rawJson').textContent = JSON.stringify(p, null, 2);
+    }
+
+    function toggleRaw() {
+      const pre = document.getElementById('rawJson');
+      pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
+    }
+
+    loadProduct();
+  </script>
+</body>
+</html>
