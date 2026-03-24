@@ -11,7 +11,8 @@ def execute_query(sql: str, params: List[Any] = None) -> List[Dict]:
 def get_products_list(q: Optional[str] = None, brand: Optional[str] = None) -> List[Dict]:
     """Liste des produits avec filtres (TOUS les résultats)"""
     sql = f"""
-        SELECT code, product_name, brands, energy_kcal_100g, 
+        SELECT code, product_name, brands,
+               energy_kcal_100g, fat_100g, salt_100g, sugars_100g,
                nutriscore_grade, ecoscore_grade, front_url
         FROM {TABLE_NAME}
         WHERE 1=1
