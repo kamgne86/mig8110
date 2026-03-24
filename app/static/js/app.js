@@ -5,34 +5,7 @@ let allProducts = [];          // résultats bruts de l'API
 let activeGrades = new Set();  // nutriscore sélectionnés
 
 // ─── Helpers données ──────────────────────────────────────────────────────────
-/** Retourne le grade si valide (a-e), sinon null */
-function validGrade(grade) {
-  if (!grade) return null;
-  const g = grade.toLowerCase();
-  return ['a','b','c','d','e'].includes(g) ? g : null;
-}
-
-/**
- * Parse un champ tags qui peut être :
- *   - un vrai tableau JS  : ["en:foo-bar", "fr:baz"]   (format API)
- *   - une string Python   : "['en:foo-bar', 'fr:baz']" (format CSV legacy)
- * Retourne un tableau de labels lisibles.
- */
-function parseTags(raw, maxItems = null) {
-  if (!raw) return [];
-
-  let tags = [];
-  if (Array.isArray(raw)) {
-    tags = raw;
-  } else if (typeof raw === 'string') {
-    if (raw === '[]' || raw.trim() === '') return [];
-    tags = [...raw.matchAll(/'([^']+)'/g)].map(m => m[1]);
-  }
-
-  let labels = tags.map(tag => tag.replace(/^[a-z]{2}:/, '').replace(/-/g, ' '));
-  if (maxItems) labels = labels.slice(0, maxItems);
-  return labels;
-}
+// validGrade() et parseTags() sont définis dans utils.js
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -115,7 +88,8 @@ function renderProducts(products) {
     return;
   }
 
-  statsDiv.innerHTML = `<strong>${displayable.length} produit(s) affiché(s)</strong>${allProducts.length !== displayable.length ? ` sur ${allProducts.length} récupérés` : ''}`;
+  const limitWarning = allProducts.length === 500 ? ' <em>(limite de 500 atteinte, affinez votre recherche)</em>' : '';
+  statsDiv.innerHTML = `<strong>${displayable.length} produit(s) affiché(s)</strong>${allProducts.length !== displayable.length ? ` sur ${allProducts.length} récupérés` : ''}${limitWarning}`;
   statsDiv.style.display = 'block';
 
   resultsDiv.innerHTML = displayable.map(p => {
@@ -171,13 +145,11 @@ async function comparerProduits() {
 
   let details;
   try {
-    // Fetches séquentiels pour éviter les conflits de connexion DuckDB
-    details = [];
-    for (const code of codes) {
+    details = await Promise.all(codes.map(async code => {
       const res = await fetch(`${API_BASE}/products/${code}`);
       if (!res.ok) throw new Error(`HTTP ${res.status} pour ${code}`);
-      details.push(await res.json());
-    }
+      return res.json();
+    }));
   } catch (err) {
     showError('Erreur lors de la comparaison : ' + err.message);
     return;

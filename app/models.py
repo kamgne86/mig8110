@@ -12,8 +12,8 @@ def execute_query(sql: str, params: List[Any] = None) -> List[Dict]:
     finally:
         conn.close()
 
-def get_products_list(q: Optional[str] = None, brand: Optional[str] = None) -> List[Dict]:
-    """Liste des produits avec filtres (TOUS les résultats)."""
+def get_products_list(q: Optional[str] = None, brand: Optional[str] = None, limit: int = 500) -> List[Dict]:
+    """Liste des produits avec filtres, plafonnée à `limit` résultats."""
     sql = f"""
         SELECT code, product_name, brands,
                energy_kcal_100g, fat_100g, salt_100g, sugars_100g,
@@ -30,19 +30,12 @@ def get_products_list(q: Optional[str] = None, brand: Optional[str] = None) -> L
         sql += " AND lower(brands) LIKE ?"
         params.append(f"%{brand.lower()}%")
 
-    sql += " ORDER BY product_name NULLS LAST"
+    sql += " ORDER BY product_name NULLS LAST LIMIT ?"
+    params.append(limit)
 
     return execute_query(sql, params)
 
 def get_product_by_code(code: str) -> Optional[Dict]:
     """Détail d'un produit par code, sur une connexion dédiée."""
-    conn = get_conn()
-    try:
-        result = conn.execute(f"SELECT * FROM {TABLE_NAME} WHERE code = ?", [code])
-        row = result.fetchone()
-        if not row:
-            return None
-        cols = [c[0] for c in result.description]
-        return dict(zip(cols, row))
-    finally:
-        conn.close()
+    rows = execute_query(f"SELECT * FROM {TABLE_NAME} WHERE code = ?", [code])
+    return rows[0] if rows else None
