@@ -1,15 +1,19 @@
-from config import db, TABLE_NAME
+from config import get_conn, TABLE_NAME
 from typing import List, Dict, Any, Optional
 
 def execute_query(sql: str, params: List[Any] = None) -> List[Dict]:
-    """Exécute une requête et retourne les résultats en dicts"""
-    result = db.execute(sql, params or [])
-    cols = [c[0] for c in result.description]
-    rows = result.fetchall()
-    return [dict(zip(cols, row)) for row in rows]
+    """Exécute une requête sur une connexion dédiée et la ferme aussitôt."""
+    conn = get_conn()
+    try:
+        result = conn.execute(sql, params or [])
+        cols = [c[0] for c in result.description]
+        rows = result.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+    finally:
+        conn.close()
 
 def get_products_list(q: Optional[str] = None, brand: Optional[str] = None) -> List[Dict]:
-    """Liste des produits avec filtres (TOUS les résultats)"""
+    """Liste des produits avec filtres (TOUS les résultats)."""
     sql = f"""
         SELECT code, product_name, brands,
                energy_kcal_100g, fat_100g, salt_100g, sugars_100g,
@@ -31,13 +35,14 @@ def get_products_list(q: Optional[str] = None, brand: Optional[str] = None) -> L
     return execute_query(sql, params)
 
 def get_product_by_code(code: str) -> Optional[Dict]:
-    """Détail d'un produit par code"""
-    sql = f"SELECT * FROM {TABLE_NAME} WHERE code = ?"
-    result = db.execute(sql, [code])
-    row = result.fetchone()
-    
-    if not row:
-        return None
-    
-    cols = [c[0] for c in result.description]
-    return dict(zip(cols, row))
+    """Détail d'un produit par code, sur une connexion dédiée."""
+    conn = get_conn()
+    try:
+        result = conn.execute(f"SELECT * FROM {TABLE_NAME} WHERE code = ?", [code])
+        row = result.fetchone()
+        if not row:
+            return None
+        cols = [c[0] for c in result.description]
+        return dict(zip(cols, row))
+    finally:
+        conn.close()
