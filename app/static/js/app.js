@@ -26,7 +26,6 @@ function parseTags(raw, maxItems = null) {
     tags = raw;
   } else if (typeof raw === 'string') {
     if (raw === '[]' || raw.trim() === '') return [];
-    // Extrait tout ce qui est entre apostrophes (format Python)
     tags = [...raw.matchAll(/'([^']+)'/g)].map(m => m[1]);
   }
 
@@ -37,7 +36,6 @@ function parseTags(raw, maxItems = null) {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Nutriscore filter buttons
   document.querySelectorAll('#nutriFilters button').forEach(btn => {
     btn.addEventListener('click', () => {
       const grade = btn.dataset.grade;
@@ -52,12 +50,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Enter key triggers search
   document.addEventListener('keypress', e => {
     if (e.key === 'Enter') fetchAndRender();
   });
 
-  // Debounce brand input
   document.getElementById('searchBrand').addEventListener('input', debounce(fetchAndRender, 500));
 });
 
@@ -92,16 +88,14 @@ function applyFilters() {
   const maxFat   = parseFloat(document.getElementById('fatSlider').value);
 
   const filtered = allProducts.filter(p => {
-    // Nutriscore — on ignore les produits avec grade "unknown" ou absent si un filtre est actif
     if (activeGrades.size > 0) {
       const grade = validGrade(p.nutriscore_grade);
       if (!grade || !activeGrades.has(grade)) return false;
     }
-    // Sliders (on ignore si le champ est null/undefined)
-    if (p.salt_100g    != null && p.salt_100g    > maxSalt)  return false;
-    if (p.sugars_100g  != null && p.sugars_100g  > maxSugar) return false;
+    if (p.salt_100g        != null && p.salt_100g        > maxSalt)  return false;
+    if (p.sugars_100g      != null && p.sugars_100g      > maxSugar) return false;
     if (p.energy_kcal_100g != null && p.energy_kcal_100g > maxCal)   return false;
-    if (p.fat_100g     != null && p.fat_100g     > maxFat)  return false;
+    if (p.fat_100g         != null && p.fat_100g         > maxFat)   return false;
     return true;
   });
 
@@ -113,12 +107,11 @@ function renderProducts(products) {
   const statsDiv   = document.getElementById('stats');
   const resultsDiv = document.getElementById('results');
 
-  // Filtre les produits sans nom (données incomplètes)
   const displayable = products.filter(p => p.product_name && p.product_name.trim() !== '');
 
   if (displayable.length === 0) {
     statsDiv.style.display = 'none';
-    resultsDiv.innerHTML = '<p class="empty-msg">Aucun produit trouvé 😕</p>';
+    resultsDiv.innerHTML = '<p class="empty-msg">Aucun produit trouvé.</p>';
     return;
   }
 
@@ -129,30 +122,31 @@ function renderProducts(products) {
     const ns = validGrade(p.nutriscore_grade);
     const es = validGrade(p.ecoscore_grade);
     return `
-    <div class="product-card">
-      <div class="product-check">
-        <input type="checkbox" class="compare-check" value="${p.code}" data-name="${escHtml(p.product_name || '')}">
-      </div>
-
-      <div class="product-image">
-        ${p.front_url
-          ? `<img src="${escHtml(p.front_url)}" alt="Photo" style="width:100%;height:100%;object-fit:cover;border-radius:6px;">`
-          : 'IMAGE'}
-      </div>
-
-      <div class="product-info">
-        <h3>${escHtml(p.product_name)}</h3>
-        <p>${escHtml(p.brands || 'Sans marque')}</p>
-        <div class="product-meta">
-          <span>${p.energy_kcal_100g != null ? Math.round(p.energy_kcal_100g) + ' kcal' : '—'}</span>
-          ${ns ? `<span class="badge ns-${ns}">${ns.toUpperCase()}</span>` : ''}
-          ${es ? `<span class="badge eco es-${es}">Éco ${es.toUpperCase()}</span>` : ''}
+      <div class="product-card">
+        <div class="product-check">
+          <input type="checkbox" class="compare-check" value="${p.code}" data-name="${escHtml(p.product_name || '')}">
         </div>
+        <div class="product-image">
+          ${p.front_url
+            ? `<img src="${escHtml(p.front_url)}" alt="Photo" style="width:100%;height:100%;object-fit:cover;border-radius:6px;">`
+            : '<i data-lucide="image" style="width:28px;height:28px;stroke:#9ca3af;"></i>'}
+        </div>
+        <div class="product-info">
+          <h3>${escHtml(p.product_name)}</h3>
+          <p>${escHtml(p.brands || 'Sans marque')}</p>
+          <div class="product-meta">
+            <span>${p.energy_kcal_100g != null ? Math.round(p.energy_kcal_100g) + ' kcal' : '—'}</span>
+            ${ns ? `<span class="badge ns-${ns}">${ns.toUpperCase()}</span>` : ''}
+            ${es ? `<span class="badge eco es-${es}">Éco ${es.toUpperCase()}</span>` : ''}
+          </div>
+        </div>
+        <button class="detail-btn" onclick="voirDetail('${escAttr(p.code)}')">Voir Détail</button>
       </div>
+    `;
+  }).join('');
 
-      <button class="detail-btn" onclick="voirDetail('${escAttr(p.code)}')">Voir Détail ▶</button>
-    </div>
-  `}).join('');
+  // Obligatoire : re-traiter les <i data-lucide="..."> injectés dynamiquement
+  lucide.createIcons();
 }
 
 // ─── Navigation détail ────────────────────────────────────────────────────────
@@ -175,26 +169,27 @@ async function comparerProduits() {
 
   const codes = checked.map(c => c.value);
 
-  // Récupère les détails complets depuis l'API
   let details;
   try {
-    details = await Promise.all(codes.map(async code => {
+    // Fetches séquentiels pour éviter les conflits de connexion DuckDB
+    details = [];
+    for (const code of codes) {
       const res = await fetch(`${API_BASE}/products/${code}`);
       if (!res.ok) throw new Error(`HTTP ${res.status} pour ${code}`);
-      return res.json();
-    }));
+      details.push(await res.json());
+    }
   } catch (err) {
     showError('Erreur lors de la comparaison : ' + err.message);
     return;
   }
 
   const fields = [
-    { label: '🔥 Calories',   key: 'energy_kcal_100g',  unit: 'kcal' },
-    { label: '🫒 Lipides',    key: 'fat_100g',           unit: 'g' },
-    { label: '🌾 Glucides',   key: 'carbohydrates_100g', unit: 'g' },
-    { label: '🍬 Sucres',     key: 'sugars_100g',        unit: 'g' },
-    { label: '💪 Protéines',  key: 'proteins_100g',      unit: 'g' },
-    { label: '🧂 Sel',        key: 'salt_100g',          unit: 'g' },
+    { label: 'Calories',  key: 'energy_kcal_100g',   unit: 'kcal', icon: 'flame'      },
+    { label: 'Lipides',   key: 'fat_100g',           unit: 'g',    icon: 'droplets'   },
+    { label: 'Glucides',  key: 'carbohydrates_100g', unit: 'g',    icon: 'wheat'      },
+    { label: 'Sucres',    key: 'sugars_100g',        unit: 'g',    icon: 'candy'      },
+    { label: 'Protéines', key: 'proteins_100g',      unit: 'g',    icon: 'dumbbell'   },
+    { label: 'Sel',       key: 'salt_100g',          unit: 'g',    icon: 'circle-dot' },
   ];
 
   const header = `
@@ -213,16 +208,18 @@ async function comparerProduits() {
   `;
 
   const rows = fields.map(f => {
-    const vals = details.map(p => p[f.key]);
+    const vals    = details.map(p => p[f.key]);
     const numVals = vals.filter(v => v != null);
-    const minVal = numVals.length ? Math.min(...numVals) : null;
+    const minVal  = numVals.length ? Math.min(...numVals) : null;
 
     return `
       <div class="compare-row">
-        <div class="compare-field-col">${f.label}</div>
+        <div class="compare-field-col">
+          <i data-lucide="${f.icon}" class="nutri-icon"></i>${f.label}
+        </div>
         ${vals.map(v => {
           const display = v != null ? `${Math.round(v * 100) / 100} ${f.unit}` : '—';
-          const isBest = v != null && v === minVal && numVals.length > 1;
+          const isBest  = v != null && v === minVal && numVals.length > 1;
           return `<div class="compare-val-col ${isBest ? 'best-val' : ''}">${display}</div>`;
         }).join('')}
       </div>
@@ -231,6 +228,9 @@ async function comparerProduits() {
 
   document.getElementById('compareContent').innerHTML = header + rows;
   document.getElementById('compareModal').style.display = 'flex';
+
+  // Obligatoire : re-traiter les <i data-lucide="..."> injectés dans la modale
+  lucide.createIcons();
 }
 
 function fermerComparaison() {
@@ -243,9 +243,9 @@ function resetFilters() {
   document.querySelectorAll('#nutriFilters button').forEach(b => b.classList.remove('active'));
 
   document.getElementById('saltSlider').value  = 5;    updateSliderLabel('saltVal',  '5.00', 'g');
-  document.getElementById('sugarSlider').value = 100;  updateSliderLabel('sugarVal', 100,  'g');
-  document.getElementById('calSlider').value   = 1000; updateSliderLabel('calVal',   1000, 'kcal');
-  document.getElementById('fatSlider').value   = 100;  updateSliderLabel('fatVal',   100,  'g');
+  document.getElementById('sugarSlider').value = 100;  updateSliderLabel('sugarVal', 100,    'g');
+  document.getElementById('calSlider').value   = 1000; updateSliderLabel('calVal',   1000,   'kcal');
+  document.getElementById('fatSlider').value   = 100;  updateSliderLabel('fatVal',   100,    'g');
 
   applyFilters();
 }
@@ -256,7 +256,7 @@ function updateSliderLabel(id, value, unit) {
 }
 
 function showLoading() {
-  document.getElementById('results').innerHTML = '<p class="empty-msg">🔄 Recherche en cours…</p>';
+  document.getElementById('results').innerHTML = '<p class="empty-msg">Recherche en cours...</p>';
   document.getElementById('stats').style.display = 'none';
 }
 

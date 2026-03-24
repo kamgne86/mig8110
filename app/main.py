@@ -4,7 +4,7 @@ from routers import products
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
-    title="OFF Canada API",
+    title="FoodHealth Advisor",
     description="API pour explorer les produits alimentaires canadiens",
     version="1.0.0"
 )

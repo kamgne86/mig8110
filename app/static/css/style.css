@@ -1,3 +1,25 @@
+/* ─── Lucide icons ──────────────────────────────────────────────────────────── */
+.header-icon {
+  width: 20px;
+  height: 20px;
+  stroke: #e05252;
+  vertical-align: middle;
+  margin-right: 4px;
+  position: relative;
+  top: -1px;
+}
+
+.nutri-icon {
+  width: 15px;
+  height: 15px;
+  stroke: #6b7280;
+  vertical-align: middle;
+  margin-right: 6px;
+  position: relative;
+  top: -1px;
+  flex-shrink: 0;
+}
+
 /* ─── Reset & base ─────────────────────────────────────────────────────────── */
 * { box-sizing: border-box; }
 
@@ -314,6 +336,8 @@ input[type="range"] { width: 100%; accent-color: #4f46e5; }
 }
 
 .nutrition-details li {
+  display: flex;
+  align-items: center;
   border-bottom: 1px solid #edf1f5;
   padding: 10px 0;
   color: #475467;
