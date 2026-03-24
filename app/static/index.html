@@ -1,25 +1,101 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OFF Canada - Recherche Produits</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FoodHealth Advisor</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
-    <h1>Recherche Produits Canada</h1>
-    
-    <div class="search-container">
-        <input type="text" id="searchName" placeholder="Nom du produit (ex: milk, syrup...)">
-        <input type="text" id="searchBrand" placeholder="Marque (ex: Kroger)">
-        <button onclick="searchProducts()">Rechercher</button>
-        <button onclick="clearFilters()">Effacer</button>
+  <div class="page">
+    <div class="panel">
+      <div class="panel-header">
+        <h1>❤ FoodHealth Advisor</h1>
+      </div>
+
+      <div class="panel-body">
+        <div class="search-row">
+          <input type="text" id="searchName" placeholder="Rechercher un produit..." />
+          <input type="text" id="searchBrand" placeholder="Marque..." />
+          <button onclick="fetchAndRender()">Rechercher</button>
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="filter-section">
+          <div class="filter-title">Nutri-Score :</div>
+          <div class="quick-filters" id="nutriFilters">
+            <button data-grade="a">A</button>
+            <button data-grade="b">B</button>
+            <button data-grade="c">C</button>
+            <button data-grade="d">D</button>
+            <button data-grade="e">E</button>
+          </div>
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>Sel max :</span>
+            <span id="saltVal">5 g</span>
+          </div>
+          <input type="range" id="saltSlider" min="0" max="5" step="0.01" value="5" oninput="updateSliderLabel('saltVal', parseFloat(this.value).toFixed(2), 'g'); applyFilters()" />
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>Sucres max :</span>
+            <span id="sugarVal">100 g</span>
+          </div>
+          <input type="range" id="sugarSlider" min="0" max="100" step="1" value="100" oninput="updateSliderLabel('sugarVal', this.value, 'g'); applyFilters()" />
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>Calories max :</span>
+            <span id="calVal">1000 kcal</span>
+          </div>
+          <input type="range" id="calSlider" min="0" max="1000" step="10" value="1000" oninput="updateSliderLabel('calVal', this.value, 'kcal'); applyFilters()" />
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>Lipides max :</span>
+            <span id="fatVal">100 g</span>
+          </div>
+          <input type="range" id="fatSlider" min="0" max="100" step="1" value="100" oninput="updateSliderLabel('fatVal', this.value, 'g'); applyFilters()" />
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="action-row">
+          <button class="small-btn compare-btn" onclick="comparerProduits()">Comparer</button>
+          <div class="right-buttons">
+            <button class="small-btn" onclick="resetFilters()">Réinitialiser</button>
+          </div>
+        </div>
+
+        <div id="stats" class="stats" style="display:none;"></div>
+        <div id="error" class="error" style="display:none;"></div>
+
+        <div class="products-title">Produits adaptés</div>
+        <div id="results"><p class="empty-msg">Cliquez sur Rechercher pour voir les produits…</p></div>
+      </div>
     </div>
+  </div>
 
-    <div id="stats" class="stats" style="display: none;"></div>
-    <div id="error" class="error" style="display: none;"></div>
-    <div id="results" class="loading">Cliquez sur Rechercher pour voir les produits...</div>
+  <!-- Compare modal -->
+  <div id="compareModal" class="modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2>Comparaison</h2>
+        <button class="modal-close" onclick="fermerComparaison()">✕</button>
+      </div>
+      <div id="compareContent" class="compare-grid"></div>
+    </div>
+  </div>
 
-    <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js"></script>
 </body>
 </html>
