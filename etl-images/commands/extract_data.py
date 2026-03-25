@@ -18,7 +18,9 @@ def handle(output_file_key, url):
     s3_secret_key = os.environ["S3_SECRET_KEY"]
 
     # Télécharger et traiter en mémoire
-    response = requests.get(url)
+    session = requests.Session()
+    session.headers.update({"User-Agent": "FoodHealthAdvisor/1.0"})
+    response = session.get(url)
     response.raise_for_status()
     
     # Dézipper et charger le parquet en mémoire

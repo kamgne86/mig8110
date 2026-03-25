@@ -46,23 +46,25 @@ class TestFullLoad:
         url = "https://example.com/data.parquet.zip"
         output_key = "test_output.parquet"
 
-        with patch("requests.get") as mock_get, \
+        with patch("commands.extract_data.requests.Session") as mock_session_cls, \
              patch("commands.extract_data.S3FileHandler") as mock_s3:
-            
+
             # Mock HTTP response
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
             mock_response = Mock()
             mock_response.content = zip_content
-            mock_get.return_value = mock_response
-            
+            mock_session.get.return_value = mock_response
+
             # Mock S3 handler
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            
+
             # Execute
             handle(output_key, url)
-            
+
             # Assertions
-            mock_get.assert_called_once_with(url)
+            mock_session.get.assert_called_once_with(url)
             mock_s3.assert_called_once_with(
                 "test-bucket",
                 "https://s3.example.com",
@@ -76,12 +78,13 @@ class TestFullLoad:
         url = "https://example.com/invalid.zip"
         output_key = "test_output.parquet"
 
-        with patch("requests.get") as mock_get:
-            # Mock HTTP response with invalid zip content
+        with patch("commands.extract_data.requests.Session") as mock_session_cls:
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
             mock_response = Mock()
             mock_response.content = b"invalid zip content"
-            mock_get.return_value = mock_response
-            
+            mock_session.get.return_value = mock_response
+
             # Should raise BadZipFile error
             with pytest.raises(zipfile.BadZipFile):
                 handle(output_key, url)
@@ -92,11 +95,13 @@ class TestFullLoad:
         url = "https://example.com/data.parquet.zip"
         output_key = "test_output.parquet"
 
-        with patch("requests.get") as mock_get:
+        with patch("commands.extract_data.requests.Session") as mock_session_cls:
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
             mock_response = Mock()
             mock_response.content = zip_content
-            mock_get.return_value = mock_response
-            
+            mock_session.get.return_value = mock_response
+
             # Clear environment to trigger KeyError
             with patch.dict(os.environ, {}, clear=True):
                 with pytest.raises(KeyError):
