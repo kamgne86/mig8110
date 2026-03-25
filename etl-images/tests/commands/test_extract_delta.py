@@ -42,16 +42,16 @@ class TestExtractDelta:
         """Test fetching delta index."""
         index_content = "file1.json.gz\nfile2.json.gz\nfile3.json.gz\n"
 
-        with patch("commands.extract_delta.requests.get") as mock_get:
-            mock_response = Mock()
-            mock_response.text = index_content
-            mock_response.raise_for_status = Mock()
-            mock_get.return_value = mock_response
+        mock_session = Mock()
+        mock_response = Mock()
+        mock_response.text = index_content
+        mock_response.raise_for_status = Mock()
+        mock_session.get.return_value = mock_response
 
-            filenames = _get_delta_filenames(INDEX_URL)
+        filenames = _get_delta_filenames(mock_session, INDEX_URL)
 
-            assert filenames == ["file1.json.gz", "file2.json.gz", "file3.json.gz"]
-            mock_get.assert_called_once_with(INDEX_URL, timeout=30)
+        assert filenames == ["file1.json.gz", "file2.json.gz", "file3.json.gz"]
+        mock_session.get.assert_called_once_with(INDEX_URL, timeout=30)
 
     def _mock_stream_response(self, gzipped_content):
         """Create a mock streaming response with .raw as BytesIO."""
@@ -64,14 +64,14 @@ class TestExtractDelta:
 
     def test_download_delta(self, gzipped_jsonl, delta_records):
         """Test downloading and decompressing a single delta file."""
-        with patch("commands.extract_delta.requests.get") as mock_get:
-            mock_get.return_value = self._mock_stream_response(gzipped_jsonl)
+        mock_session = Mock()
+        mock_session.get.return_value = self._mock_stream_response(gzipped_jsonl)
 
-            records = _download_delta(BASE_URL, "test_file.json.gz")
+        records = _download_delta(mock_session, BASE_URL, "test_file.json.gz")
 
-            assert len(records) == 2
-            assert records[0]["code"] == "123"
-            assert records[1]["product_name"] == "Test Product B"
+        assert len(records) == 2
+        assert records[0]["code"] == "123"
+        assert records[1]["product_name"] == "Test Product B"
 
     def test_download_delta_filters_non_canadian(self):
         """Test that _download_delta only returns Canadian products."""
@@ -83,20 +83,23 @@ class TestExtractDelta:
         jsonl = "\n".join(json.dumps(r) for r in mixed_records)
         content = gzip.compress(jsonl.encode("utf-8"))
 
-        with patch("commands.extract_delta.requests.get") as mock_get:
-            mock_get.return_value = self._mock_stream_response(content)
+        mock_session = Mock()
+        mock_session.get.return_value = self._mock_stream_response(content)
 
-            records = _download_delta(BASE_URL, "test.json.gz")
+        records = _download_delta(mock_session, BASE_URL, "test.json.gz")
 
-            assert len(records) == 2
-            assert {r["code"] for r in records} == {"1", "3"}
+        assert len(records) == 2
+        assert {r["code"] for r in records} == {"1", "3"}
 
     def test_handle_success(self, mock_env_vars, gzipped_jsonl):
         """Test successful delta extraction with all files."""
         index_content = "1000_1100.json.gz\n1100_1200.json.gz\n"
 
-        with patch("commands.extract_delta.requests.get") as mock_get, \
+        with patch("commands.extract_delta.requests.Session") as mock_session_cls, \
              patch("commands.extract_delta.S3FileHandler") as mock_s3:
+
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
 
             def side_effect(url, **kwargs):
                 if "index.txt" in url:
@@ -106,7 +109,7 @@ class TestExtractDelta:
                     return mock_response
                 return self._mock_stream_response(gzipped_jsonl)
 
-            mock_get.side_effect = side_effect
+            mock_session.get.side_effect = side_effect
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
 
@@ -122,13 +125,15 @@ class TestExtractDelta:
 
     def test_handle_empty_index(self, mock_env_vars):
         """Test behaviour when no delta files are available."""
-        with patch("commands.extract_delta.requests.get") as mock_get, \
+        with patch("commands.extract_delta.requests.Session") as mock_session_cls, \
              patch("commands.extract_delta.S3FileHandler") as mock_s3:
 
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
             mock_response = Mock()
             mock_response.text = ""
             mock_response.raise_for_status = Mock()
-            mock_get.return_value = mock_response
+            mock_session.get.return_value = mock_response
 
             handle("output/delta.parquet", INDEX_URL)
 

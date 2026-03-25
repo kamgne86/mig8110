@@ -10,9 +10,9 @@ from common.s3 import S3FileHandler
 logging.basicConfig(level=logging.INFO)
 
 
-def _get_delta_filenames(index_url):
+def _get_delta_filenames(session, index_url):
     """Fetch the list of available delta filenames from the index."""
-    response = requests.get(index_url, timeout=30)
+    response = session.get(index_url, timeout=30)
     response.raise_for_status()
     filenames = [line.strip() for line in response.text.splitlines() if line.strip()]
     return filenames
@@ -23,13 +23,13 @@ def _is_canadian(tags):
     return isinstance(tags, list) and "en:canada" in tags
 
 
-def _download_delta(base_url, filename):
+def _download_delta(session, base_url, filename):
     """Stream a gzipped JSONL delta file and return only Canadian product records."""
     url = urljoin(base_url, filename)
     logging.info(f"Downloading delta file: {url}")
 
     records = []
-    with requests.get(url, timeout=120, stream=True) as response:
+    with session.get(url, timeout=120, stream=True) as response:
         response.raise_for_status()
         with gzip.GzipFile(fileobj=response.raw) as gz:
             for raw_line in gz:
@@ -56,10 +56,13 @@ def handle(output_file_key, url, num_files=None):
     s3_access_key = os.environ["S3_ACCESS_KEY"]
     s3_secret_key = os.environ["S3_SECRET_KEY"]
 
+    session = requests.Session()
+    session.headers.update({"User-Agent": "FoodHealthAdvisor/1.0"})
+
     # Derive base URL for individual delta files from the index URL
     base_url = url.rsplit("/", 1)[0] + "/"
 
-    filenames = _get_delta_filenames(url)
+    filenames = _get_delta_filenames(session, url)
     if not filenames:
         logging.warning("No delta files available.")
         return
@@ -74,7 +77,7 @@ def handle(output_file_key, url, num_files=None):
 
     all_records = []
     for filename in filenames:
-        records = _download_delta(base_url, filename)
+        records = _download_delta(session, base_url, filename)
         all_records.extend(records)
         logging.info(f"  {filename}: {len(records)} Canadian records")
 
