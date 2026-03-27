@@ -2,6 +2,7 @@ import os
 import gzip
 import json
 import logging
+import pandas as pd
 import requests
 from io import BytesIO
 from urllib.parse import urljoin
@@ -41,13 +42,16 @@ def _download_delta(session, base_url, filename):
     return records
 
 
-def handle(output_file_key, url, num_files=None):
+def handle(output_file_key, url, num_files=None, last_processed_file=None):
     """Download delta exports, merge them, and upload as parquet to S3.
 
     Args:
         output_file_key: S3 key where the resulting parquet will be stored.
         url: URL to the delta index.txt file.
         num_files: Number of most recent delta files to process (None = all).
+            Only used when last_processed_file is not provided.
+        last_processed_file: Filename of the last successfully processed delta file.
+            When provided, only files strictly after this one are processed.
     """
     logging.info(f"Fetching delta index from {url}...")
 
@@ -70,8 +74,16 @@ def handle(output_file_key, url, num_files=None):
     # Sort alphabetically (which is chronological due to UNIX timestamp naming)
     filenames.sort()
 
-    if num_files is not None:
+    if last_processed_file is not None:
+        # Only keep files strictly after the last processed one
+        filenames = [f for f in filenames if f > last_processed_file]
+        logging.info(f"Resuming after '{last_processed_file}': {len(filenames)} new file(s) to process.")
+    elif num_files is not None:
         filenames = filenames[-num_files:]
+
+    if not filenames:
+        logging.info("No new delta files to process.")
+        return
 
     logging.info(f"Processing {len(filenames)} delta file(s)...")
 
@@ -87,10 +99,14 @@ def handle(output_file_key, url, num_files=None):
 
     logging.info(f"Total Canadian records: {len(all_records)}")
 
-    jsonl = "\n".join(json.dumps(record) for record in all_records)
-    file_bytes = BytesIO(jsonl.encode("utf-8"))
+    df = pd.DataFrame(all_records)
+    parquet_bytes = BytesIO()
+    df.to_parquet(parquet_bytes, index=False)
+    parquet_bytes.seek(0)
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
-    s3_handler.upload_from_memory(file_bytes, output_file_key)
+    s3_handler.upload_from_memory(parquet_bytes, output_file_key)
 
-    logging.info(f"Delta data uploaded to S3 at '{output_file_key}'")
+    logging.info(f"Delta data uploaded to S3 at '{output_file_key}' ({len(df)} records)")
+    # Préfixe standardisé pour que le DAG puisse extraire cette valeur et mettre à jour la Variable Airflow
+    logging.info(f"LAST_PROCESSED_FILE={filenames[-1]}")

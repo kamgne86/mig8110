@@ -7,8 +7,8 @@ from common.s3 import S3FileHandler
 logging.basicConfig(level=logging.INFO)
 
 
-def handle(input_file_key, table_name, schema_name):
-    logging.info(f"Loading {input_file_key} from S3 to DUCKDB...")
+def handle(input_file_key, table_name, schema_name, mode="create"):
+    logging.info(f"Loading {input_file_key} from S3 to DUCKDB (mode={mode})...")
 
     # Configuration S3
     s3_bucket = os.environ.get("S3_BUCKET")
@@ -24,9 +24,11 @@ def handle(input_file_key, table_name, schema_name):
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp:
         s3_handler.download(input_file_key, tmp.name)
 
-        # Insérer dans MotherDuck directement depuis le parquet
         con = duckdb.connect(f"md:{motherduck_db}?motherduck_token={motherduck_token}")
-        con.sql(f"CREATE OR REPLACE TABLE {schema_name}.{table_name} AS SELECT * FROM read_parquet('{tmp.name}')")
+        if mode == "append":
+            con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM read_parquet('{tmp.name}')")
+        else:
+            con.sql(f"CREATE OR REPLACE TABLE {schema_name}.{table_name} AS SELECT * FROM read_parquet('{tmp.name}')")
         con.close()
 
     logging.info(f"Data inserted into DUCKDB table '{schema_name}.{table_name}'")

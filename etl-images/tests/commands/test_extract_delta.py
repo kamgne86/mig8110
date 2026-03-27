@@ -2,6 +2,7 @@ import os
 import gzip
 import json
 import pytest
+import pandas as pd
 from io import BytesIO
 from unittest.mock import Mock, patch
 from commands.extract_delta import handle, _get_delta_filenames, _download_delta
@@ -139,28 +140,30 @@ class TestExtractDelta:
 
             mock_s3.assert_not_called()
 
-    def test_handle_filters_canadian_products(self, mock_env_vars):
-        """Test that only Canadian products are kept."""
-        canadian_only = [
+    def test_handle_uploads_parquet(self, mock_env_vars):
+        """Test that uploaded content is valid parquet with the expected records."""
+        canadian_records = [
             {"code": "1", "product_name": "Canadian", "countries_tags": ["en:canada"]},
-            {"code": "3", "product_name": "Multi", "countries_tags": ["en:canada", "en:usa"]},
+            {"code": "3", "product_name": "Multi",    "countries_tags": ["en:canada", "en:usa"]},
         ]
+        uploaded = {}
+
+        def capture_upload(buf, key):
+            uploaded[key] = buf.read()
 
         with patch("commands.extract_delta._get_delta_filenames", return_value=["f.json.gz"]), \
-             patch("commands.extract_delta._download_delta", return_value=canadian_only), \
+             patch("commands.extract_delta._download_delta", return_value=canadian_records), \
              patch("commands.extract_delta.S3FileHandler") as mock_s3:
 
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("output/delta.parquet", INDEX_URL)
 
-            mock_s3_instance.upload_from_memory.assert_called_once()
-            uploaded = mock_s3_instance.upload_from_memory.call_args[0][0]
-            lines = uploaded.read().decode("utf-8").strip().split("\n")
-            records = [json.loads(line) for line in lines]
-            assert len(records) == 2
-            assert {r["code"] for r in records} == {"1", "3"}
+        df = pd.read_parquet(BytesIO(uploaded["output/delta.parquet"]))
+        assert len(df) == 2
+        assert set(df["code"].tolist()) == {"1", "3"}
 
     def test_handle_no_canadian_products(self, mock_env_vars):
         """Test that nothing is uploaded when no Canadian products exist."""
@@ -183,3 +186,71 @@ class TestExtractDelta:
              patch("commands.extract_delta._download_delta", return_value=[{"code": "1"}]):
             with pytest.raises(KeyError):
                 handle("output/delta.parquet", INDEX_URL)
+
+    # --- Tests for last_processed_file ---
+
+    def test_last_processed_file_filters_older_files(self, mock_env_vars):
+        """Only files strictly after last_processed_file are processed."""
+        all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
+        processed = []
+
+        def fake_download(session, base_url, filename):
+            processed.append(filename)
+            return [{"code": "1", "countries_tags": ["en:canada"]}]
+
+        with patch("commands.extract_delta._get_delta_filenames", return_value=all_files), \
+             patch("commands.extract_delta._download_delta", side_effect=fake_download), \
+             patch("commands.extract_delta.S3FileHandler"):
+
+            handle("output/delta.parquet", INDEX_URL, last_processed_file="1100_1200.json.gz")
+
+        assert processed == ["1200_1300.json.gz"]
+
+    def test_last_processed_file_no_new_files(self, mock_env_vars):
+        """Nothing is uploaded when all files have already been processed."""
+        all_files = ["1000_1100.json.gz", "1100_1200.json.gz"]
+
+        with patch("commands.extract_delta._get_delta_filenames", return_value=all_files), \
+             patch("commands.extract_delta.S3FileHandler") as mock_s3:
+
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+
+            handle("output/delta.parquet", INDEX_URL, last_processed_file="1100_1200.json.gz")
+
+            mock_s3_instance.upload_from_memory.assert_not_called()
+
+    def test_last_processed_file_takes_precedence_over_num_files(self, mock_env_vars):
+        """last_processed_file takes precedence over num_files."""
+        all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
+        processed = []
+
+        def fake_download(session, base_url, filename):
+            processed.append(filename)
+            return [{"code": "1", "countries_tags": ["en:canada"]}]
+
+        with patch("commands.extract_delta._get_delta_filenames", return_value=all_files), \
+             patch("commands.extract_delta._download_delta", side_effect=fake_download), \
+             patch("commands.extract_delta.S3FileHandler"):
+
+            # num_files=2 would take the last 2 files, but last_processed_file should win
+            handle("output/delta.parquet", INDEX_URL, num_files=2, last_processed_file="1000_1100.json.gz")
+
+        assert processed == ["1100_1200.json.gz", "1200_1300.json.gz"]
+
+    def test_last_processed_file_none_falls_back_to_num_files(self, mock_env_vars):
+        """When last_processed_file is None, num_files is applied."""
+        all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
+        processed = []
+
+        def fake_download(session, base_url, filename):
+            processed.append(filename)
+            return [{"code": "1", "countries_tags": ["en:canada"]}]
+
+        with patch("commands.extract_delta._get_delta_filenames", return_value=all_files), \
+             patch("commands.extract_delta._download_delta", side_effect=fake_download), \
+             patch("commands.extract_delta.S3FileHandler"):
+
+            handle("output/delta.parquet", INDEX_URL, num_files=1)
+
+        assert processed == ["1200_1300.json.gz"]

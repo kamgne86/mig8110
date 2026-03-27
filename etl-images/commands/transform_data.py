@@ -3,6 +3,7 @@ import logging
 import pandas as pd
 from io import BytesIO
 from common.s3 import S3FileHandler
+from config.target_columns import TARGET_COLUMNS
 
 logging.basicConfig(level=logging.INFO)
 
@@ -115,6 +116,12 @@ def handle(input_file_key, output_file_key):
     df['ecoscore_grade'] = df['ecoscore_grade'].where(
         df['ecoscore_grade'].isin(['a-plus', 'a', 'b', 'c', 'd', 'e', 'f']), None
     )
+
+    # Projection sur le schéma Silver — garantit la compatibilité avec le delta load
+    for col in TARGET_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[TARGET_COLUMNS]
 
     # Upload f3 (transformé) → output_file_key
     transformed_bytes = BytesIO()
