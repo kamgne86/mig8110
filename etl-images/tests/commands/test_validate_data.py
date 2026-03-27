@@ -33,8 +33,9 @@ def mock_env_vars():
 @pytest.fixture
 def sample_df():
     """DataFrame with 2 valid records and 3 invalid records."""
+    nutriments = [{"name": "energy-kcal", "100g": 100.0}]
     return pd.DataFrame({
-        "code": ["111", "222", None, "", "555"],
+        "code":             ["111",   "222",   None,    "",      "555"],
         "product_name": [
             [{"lang": "main", "text": "Product A"}],
             [{"lang": "main", "text": "Product B"}],
@@ -42,7 +43,10 @@ def sample_df():
             [{"lang": "main", "text": "Product D"}],
             None,
         ],
-        "brands": ["Brand A", "Brand B", "Brand C", "Brand D", "Brand E"],
+        "brands":           ["Brand A", "Brand B", "Brand C", "Brand D", "Brand E"],
+        "nutriscore_grade": ["a",     "b",     "c",     "d",     "e"],
+        "ecoscore_grade":   ["a",     "b",     "c",     "d",     "e"],
+        "nutriments":       [nutriments, nutriments, nutriments, nutriments, nutriments],
     })
 
 
@@ -101,12 +105,16 @@ class TestValidateData:
 
     def test_all_valid(self, mock_env_vars):
         """When all records are valid, invalid file is empty."""
+        nutriments = [{"name": "energy-kcal", "100g": 100.0}]
         df = pd.DataFrame({
             "code": ["111", "222"],
             "product_name": [
                 [{"lang": "main", "text": "Product A"}],
                 [{"lang": "main", "text": "Product B"}],
             ],
+            "nutriscore_grade": ["a", "b"],
+            "ecoscore_grade":   ["a", "b"],
+            "nutriments":       [nutriments, nutriments],
         })
         uploaded = {}
 
@@ -123,6 +131,62 @@ class TestValidateData:
 
         invalid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_invalid.parquet"]))
         assert len(invalid_df) == 0
+
+    def test_nutriscore_unknown_goes_to_invalid(self, mock_env_vars):
+        """Records with nutriscore_grade 'unknown' or 'not-applicable' go to invalid."""
+        nutriments = [{"name": "energy-kcal", "100g": 100.0}]
+        df = pd.DataFrame({
+            "code": ["111", "222", "333"],
+            "product_name": [[{"lang": "main", "text": "P"}]] * 3,
+            "nutriscore_grade": ["a", "unknown", "not-applicable"],
+            "ecoscore_grade":   ["a", "a",       "a"],
+            "nutriments":       [nutriments, nutriments, nutriments],
+        })
+        uploaded = {}
+
+        def capture_upload(buf, key):
+            uploaded[key] = buf.read()
+
+        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.upload_from_memory.side_effect = capture_upload
+
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+
+        valid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_valid.parquet"]))
+        invalid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_invalid.parquet"]))
+        assert list(valid_df["code"]) == ["111"]
+        assert len(invalid_df) == 2
+
+    def test_ecoscore_unknown_goes_to_invalid(self, mock_env_vars):
+        """Records with ecoscore_grade 'unknown', 'not-applicable', or '' go to invalid."""
+        nutriments = [{"name": "energy-kcal", "100g": 100.0}]
+        df = pd.DataFrame({
+            "code": ["111", "222", "333", "444"],
+            "product_name": [[{"lang": "main", "text": "P"}]] * 4,
+            "nutriscore_grade": ["a", "a",       "a",              "a"],
+            "ecoscore_grade":   ["b", "unknown", "not-applicable", ""],
+            "nutriments":       [nutriments, nutriments, nutriments, nutriments],
+        })
+        uploaded = {}
+
+        def capture_upload(buf, key):
+            uploaded[key] = buf.read()
+
+        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.upload_from_memory.side_effect = capture_upload
+
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+
+        valid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_valid.parquet"]))
+        invalid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_invalid.parquet"]))
+        assert list(valid_df["code"]) == ["111"]
+        assert len(invalid_df) == 3
 
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""

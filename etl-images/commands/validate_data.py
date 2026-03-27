@@ -3,6 +3,7 @@ import logging
 import pandas as pd
 from io import BytesIO
 from common.s3 import S3FileHandler
+from config.validation_rules import VALIDATION_RULES
 
 logging.basicConfig(level=logging.INFO)
 
@@ -20,12 +21,10 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     parquet_bytes = s3_handler.download_to_memory(input_file_key)
     df = pd.read_parquet(parquet_bytes)
 
-    # T1 — Règles de validation
-    mask_valid = (
-        df['code'].notna() &
-        (df['code'].astype(str).str.strip() != '') &
-        df['product_name'].notna()
-    )
+    # T1 — Appliquer toutes les règles de validation
+    mask_valid = pd.Series([True] * len(df), index=df.index)
+    for rule in VALIDATION_RULES:
+        mask_valid &= rule(df)
 
     df_valid = df[mask_valid].copy()
     df_invalid = df[~mask_valid].copy()
