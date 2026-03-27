@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta']),
+    type=click.Choice(['extract_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta', 'transform_delta', 'merge_data']),
     help='Command to execute'
 )
 
@@ -49,3 +49,18 @@ invalid_file_key = click.option(
     type=str,
     help='Output file key in S3 for invalid records (f2)'
 )
+
+country = click.option(
+    '--country',
+    type=str,
+    default='canada',
+    help='Country to filter delta records on (substring match against countries_tags, default: canada)'
+)
+
+last_processed_file = click.option(
+    '--last_processed_file',
+    type=str,
+    default=None,
+    help='Filename of the last successfully processed delta file (Airflow Variable). Only files after this one will be processed.'
+)
+

@@ -18,8 +18,11 @@ def handle(input_file_key, output_file_key, invalid_file_key):
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
-    parquet_bytes = s3_handler.download_to_memory(input_file_key)
-    df = pd.read_parquet(parquet_bytes)
+    raw = s3_handler.download_to_memory(input_file_key)
+    if input_file_key.endswith(".jsonl"):
+        df = pd.read_json(raw, lines=True)
+    else:
+        df = pd.read_parquet(raw)
 
     # T1 — Appliquer toutes les règles de validation
     mask_valid = pd.Series([True] * len(df), index=df.index)
@@ -31,16 +34,18 @@ def handle(input_file_key, output_file_key, invalid_file_key):
 
     logging.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
 
-    # Upload f1 (valides) → output_file_key
-    valid_bytes = BytesIO()
-    df_valid.to_parquet(valid_bytes, index=False)
-    valid_bytes.seek(0)
-    s3_handler.upload_from_memory(valid_bytes, output_file_key)
+    _upload_df(s3_handler, df_valid, output_file_key)
     logging.info(f"Valid data uploaded to S3: {output_file_key}")
 
-    # Upload f2 (invalides) → invalid_file_key
-    invalid_bytes = BytesIO()
-    df_invalid.to_parquet(invalid_bytes, index=False)
-    invalid_bytes.seek(0)
-    s3_handler.upload_from_memory(invalid_bytes, invalid_file_key)
+    _upload_df(s3_handler, df_invalid, invalid_file_key)
     logging.info(f"Invalid data uploaded to S3: {invalid_file_key}")
+
+
+def _upload_df(s3_handler, df, file_key):
+    buf = BytesIO()
+    if file_key.endswith(".jsonl"):
+        buf.write(df.to_json(orient="records", lines=True, force_ascii=False).encode("utf-8"))
+    else:
+        df.to_parquet(buf, index=False)
+    buf.seek(0)
+    s3_handler.upload_from_memory(buf, file_key)
