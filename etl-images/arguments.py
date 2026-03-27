@@ -64,9 +64,3 @@ last_processed_file = click.option(
     help='Filename of the last successfully processed delta file (Airflow Variable). Only files after this one will be processed.'
 )
 
-mode = click.option(
-    '--mode',
-    type=click.Choice(['create', 'append']),
-    default='create',
-    help='Load mode: create (CREATE OR REPLACE) or append (INSERT INTO)'
-)

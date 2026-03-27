@@ -2,9 +2,11 @@ import os
 import gzip
 import json
 import logging
+import time
 import requests
 from io import BytesIO
 from urllib.parse import urljoin
+from urllib3.exceptions import ProtocolError
 from common.s3 import S3FileHandler
 
 logging.basicConfig(level=logging.INFO)
@@ -23,22 +25,38 @@ def _matches_country(tags, country):
     return isinstance(tags, list) and any(country.lower() in tag.lower() for tag in tags)
 
 
-def _download_delta(session, base_url, filename, country):
-    """Stream a gzipped JSONL delta file and return only records matching the country."""
-    url = urljoin(base_url, filename)
-    logging.info(f"Downloading delta file: {url}")
+def _download_delta(session, base_url, filename, country, max_retries=3):
+    """Stream a gzipped JSONL delta file and return only records matching the country.
 
-    records = []
-    with session.get(url, timeout=120, stream=True) as response:
-        response.raise_for_status()
-        with gzip.GzipFile(fileobj=response.raw) as gz:
-            for raw_line in gz:
-                line = raw_line.decode("utf-8").strip()
-                if line:
-                    record = json.loads(line)
-                    if _matches_country(record.get("countries_tags"), country):
-                        records.append(record)
-    return records
+    Retries up to max_retries times on connection drops (large files ~1GB+ are prone to this).
+
+    TODO: Les fichiers delta très volumineux (~1.3GB+) échouent systématiquement même après les retries.
+    La solution propre serait d'implémenter le téléchargement par plages HTTP (Range requests)
+    pour reprendre le téléchargement là où il s'est arrêté plutôt que de repartir du début.
+    En attendant, utiliser --last_processed_file pour sauter les fichiers problématiques.
+    """
+    url = urljoin(base_url, filename)
+
+    for attempt in range(1, max_retries + 1):
+        logging.info(f"Downloading delta file: {url} (attempt {attempt}/{max_retries})")
+        try:
+            records = []
+            with session.get(url, timeout=300, stream=True) as response:
+                response.raise_for_status()
+                with gzip.GzipFile(fileobj=response.raw) as gz:
+                    for raw_line in gz:
+                        line = raw_line.decode("utf-8").strip()
+                        if line:
+                            record = json.loads(line)
+                            if _matches_country(record.get("countries_tags"), country):
+                                records.append(record)
+            return records
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, ProtocolError) as e:
+            if attempt == max_retries:
+                raise
+            wait = 2 ** attempt
+            logging.warning(f"Connection error on {filename} (attempt {attempt}/{max_retries}), retrying in {wait}s: {e}")
+            time.sleep(wait)
 
 
 def handle(output_file_key, url, num_files=None, last_processed_file=None, country="canada"):
