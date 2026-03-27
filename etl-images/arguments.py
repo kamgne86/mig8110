@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'load_data', 'extract_delta', 'load_delta']),
+    type=click.Choice(['extract_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta']),
     help='Command to execute'
 )
 
@@ -42,4 +42,10 @@ num_files = click.option(
     type=int,
     default=None,
     help='Number of most recent delta files to process (default: all)'
+)
+
+invalid_file_key = click.option(
+    '--invalid_file_key',
+    type=str,
+    help='Output file key in S3 for invalid records (f2)'
 )

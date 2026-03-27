@@ -3,7 +3,9 @@ from commands.load_data import handle as load_data
 from commands.load_delta import handle as load_delta
 from commands.extract_data import handle as extract_data
 from commands.extract_delta import handle as extract_delta
-from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files
+from commands.validate_data import handle as validate_data
+from commands.transform_data import handle as transform_data
+from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files, invalid_file_key
 
 
 @click.command()
@@ -11,12 +13,17 @@ from arguments import command, url, output_file_key, input_file_key, table_name,
 @url
 @output_file_key
 @input_file_key
+@invalid_file_key
 @table_name
 @schema_name
 @num_files
-def main(command, output_file_key, url, input_file_key, table_name, schema_name, num_files):
+def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, num_files):
     if command == "extract_data":
         extract_data(output_file_key, url)
+    elif command == "validate_data":
+        validate_data(input_file_key, output_file_key, invalid_file_key)
+    elif command == "transform_data":
+        transform_data(input_file_key, output_file_key)
     elif command == "load_data":
         load_data(input_file_key, table_name, schema_name)
     elif command == "extract_delta":
