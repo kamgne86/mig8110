@@ -55,7 +55,8 @@ with dag:
         duckdb_conn_id='duckdb_default'
         )
 
-    # Bronze — charger le parquet brut tel quel
+    # Télécharge le snapshot initial des produits canadiens depuis GitHub
+    # et le dépose sur S3 au format parquet brut (couche Bronze)
     extract_data = CustomKubernetesPodOperator(
         dag=dag,
         name='extract-data',
@@ -81,7 +82,9 @@ with dag:
             ]
         )
 
-    # T1 — Valider : data.parquet → data_valid.parquet (f1) + data_invalid.parquet (f2)
+    # Applique les règles de validation définies dans config/validation_rules.py.
+    # Les enregistrements valides sont écrits dans data_valid.parquet,
+    # les enregistrements invalides dans data_invalid.parquet (quarantaine).
     validate_data = CustomKubernetesPodOperator(
         dag=dag,
         name='validate-data',
@@ -95,7 +98,9 @@ with dag:
             ]
         )
 
-    # T2 — Transformer : data_valid.parquet (f1) → data_transformed.parquet (f3)
+    # Applique les transformations sur les enregistrements valides :
+    # extraction du product_name, construction des URLs d'images,
+    # et mise à plat des valeurs nutritionnelles depuis la structure imbriquée.
     transform_data = CustomKubernetesPodOperator(
         dag=dag,
         name='transform-data',
@@ -108,7 +113,8 @@ with dag:
             ]
         )
 
-    # T3a — Silver : charger les données transformées
+    # Charge les données transformées dans la table staging.source_transformed (couche Silver).
+    # Cette table constitue la source principale pour les traitements analytiques futurs.
     load_silver = CustomKubernetesPodOperator(
         dag=dag,
         name='load-silver',
@@ -122,7 +128,8 @@ with dag:
             ]
         )
 
-    # T3b — Quarantaine : charger les données invalides
+    # Charge les enregistrements invalides dans staging.source_rejected pour inspection.
+    # Ces données peuvent être retraitées une fois les règles de validation ajustées.
     load_rejected = CustomKubernetesPodOperator(
         dag=dag,
         name='load-rejected',
