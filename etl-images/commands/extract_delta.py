@@ -98,7 +98,7 @@ def handle(output_file_key, url, num_files=None, last_processed_file=None, count
     # Sort alphabetically (which is chronological due to UNIX timestamp naming)
     filenames.sort()
 
-    if last_processed_file is not None:
+    if last_processed_file:
         # Only keep files strictly after the last processed one
         filenames = [f for f in filenames if f > last_processed_file]
         logging.info(f"Resuming after '{last_processed_file}': {len(filenames)} new file(s) to process.")

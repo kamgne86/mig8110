@@ -19,18 +19,18 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
     raw = s3_handler.download_to_memory(input_file_key)
-    if input_file_key.endswith(".jsonl"):
-        df = pd.read_json(raw, lines=True)
-    else:
-        df = pd.read_parquet(raw)
+    reader = pd.read_json(raw, lines=True, chunksize=500) if input_file_key.endswith(".jsonl") else [pd.read_parquet(raw)]
 
-    # T1 — Appliquer toutes les règles de validation
-    mask_valid = pd.Series([True] * len(df), index=df.index)
-    for rule in VALIDATION_RULES:
-        mask_valid &= rule(df)
+    chunks_valid, chunks_invalid = [], []
+    for chunk in reader:
+        mask = pd.Series(True, index=chunk.index)
+        for rule in VALIDATION_RULES:
+            mask &= rule(chunk)
+        chunks_valid.append(chunk[mask])
+        chunks_invalid.append(chunk[~mask])
 
-    df_valid = df[mask_valid].copy()
-    df_invalid = df[~mask_valid].copy()
+    df_valid   = pd.concat(chunks_valid,   ignore_index=True)
+    df_invalid = pd.concat(chunks_invalid, ignore_index=True)
 
     logging.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
 
