@@ -107,6 +107,15 @@ def handle(input_file_key, output_file_key):
             lambda lst, n=nutriment_name: _extract_nutriment(lst, n)
         )
 
+    # nutriscore_grade et ecoscore_grade: mettre à NULL les valeurs non reconnues
+    # afin de conserver les enregistrements tout en signalant l'absence de score
+    df['nutriscore_grade'] = df['nutriscore_grade'].where(
+        df['nutriscore_grade'].isin(['a', 'b', 'c', 'd', 'e']), None
+    )
+    df['ecoscore_grade'] = df['ecoscore_grade'].where(
+        df['ecoscore_grade'].isin(['a-plus', 'a', 'b', 'c', 'd', 'e', 'f']), None
+    )
+
     # Upload f3 (transformé) → output_file_key
     transformed_bytes = BytesIO()
     df.to_parquet(transformed_bytes, index=False)

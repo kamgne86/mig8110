@@ -46,6 +46,8 @@ def sample_df():
             {"lang": "main", "text": "Nutella"},
         ]],
         "brands": ["Ferrero"],
+        "nutriscore_grade": ["e"],
+        "ecoscore_grade":   ["b"],
         "images": [[
             {"key": "front_en",       "rev": 42},
             {"key": "ingredients_en", "rev": 10},
@@ -187,6 +189,63 @@ class TestTransformData:
 
             mock_s3_instance.upload_from_memory.assert_called_once()
             assert mock_s3_instance.upload_from_memory.call_args[0][1] == "data_transformed.parquet"
+
+    def test_invalid_nutriscore_grade_set_to_null(self, mock_env_vars):
+        """nutriscore_grade values outside the valid whitelist are replaced by None."""
+        df = pd.DataFrame({
+            "code": ["111", "222", "333"],
+            "product_name": [[{"lang": "main", "text": "P"}]] * 3,
+            "nutriscore_grade": ["a", "unknown", "not-applicable"],
+            "ecoscore_grade":   ["b", "b",       "b"],
+            "images":     [[], [], []],
+            "nutriments": [[], [], []],
+        })
+        uploaded = {}
+
+        def capture_upload(buf, key):
+            uploaded[key] = buf.read()
+
+        with patch("commands.transform_data.S3FileHandler") as mock_s3:
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.upload_from_memory.side_effect = capture_upload
+
+            handle("data_valid.parquet", "data_transformed.parquet")
+
+        result = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
+        assert result["nutriscore_grade"].iloc[0] == "a"
+        assert result["nutriscore_grade"].iloc[1] is None or pd.isna(result["nutriscore_grade"].iloc[1])
+        assert result["nutriscore_grade"].iloc[2] is None or pd.isna(result["nutriscore_grade"].iloc[2])
+
+    def test_invalid_ecoscore_grade_set_to_null(self, mock_env_vars):
+        """ecoscore_grade values outside the valid whitelist are replaced by None.
+        La valeur 'a-plus' est valide et doit être conservée."""
+        df = pd.DataFrame({
+            "code": ["111", "222", "333"],
+            "product_name": [[{"lang": "main", "text": "P"}]] * 3,
+            "nutriscore_grade": ["a", "a",       "a"],
+            "ecoscore_grade":   ["a-plus", "unknown", "not-applicable"],
+            "images":     [[], [], []],
+            "nutriments": [[], [], []],
+        })
+        uploaded = {}
+
+        def capture_upload(buf, key):
+            uploaded[key] = buf.read()
+
+        with patch("commands.transform_data.S3FileHandler") as mock_s3:
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.upload_from_memory.side_effect = capture_upload
+
+            handle("data_valid.parquet", "data_transformed.parquet")
+
+        result = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
+        assert result["ecoscore_grade"].iloc[0] == "a-plus"
+        assert result["ecoscore_grade"].iloc[1] is None or pd.isna(result["ecoscore_grade"].iloc[1])
+        assert result["ecoscore_grade"].iloc[2] is None or pd.isna(result["ecoscore_grade"].iloc[2])
 
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""

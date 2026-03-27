@@ -7,7 +7,5 @@ VALIDATION_RULES = [
     lambda df: df['code'].notna(),
     lambda df: df['code'].astype(str).str.strip() != '',
     lambda df: df['product_name'].notna(),
-    lambda df: df['nutriscore_grade'].isin(['a', 'b', 'c', 'd', 'e']),
-    lambda df: df['ecoscore_grade'].isin(['a', 'b', 'c', 'd', 'e']),
     lambda df: df['nutriments'].notna(),
 ]
