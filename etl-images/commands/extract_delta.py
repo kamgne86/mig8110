@@ -2,11 +2,10 @@ import os
 import gzip
 import json
 import logging
-import time
+import tempfile
 import requests
 from io import BytesIO
 from urllib.parse import urljoin
-from urllib3.exceptions import ProtocolError
 from common.s3 import S3FileHandler
 
 logging.basicConfig(level=logging.INFO)
@@ -25,38 +24,46 @@ def _matches_country(tags, country):
     return isinstance(tags, list) and any(country.lower() in tag.lower() for tag in tags)
 
 
-def _download_delta(session, base_url, filename, country, max_retries=3):
-    """Stream a gzipped JSONL delta file and return only records matching the country.
+CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB
 
-    Retries up to max_retries times on connection drops (large files ~1GB+ are prone to this).
 
-    TODO: Les fichiers delta très volumineux (~1.3GB+) échouent systématiquement même après les retries.
-    La solution propre serait d'implémenter le téléchargement par plages HTTP (Range requests)
-    pour reprendre le téléchargement là où il s'est arrêté plutôt que de repartir du début.
-    En attendant, utiliser --last_processed_file pour sauter les fichiers problématiques.
+def _download_delta(session, base_url, filename, country):
+    """Télécharge un fichier delta gzippé par chunks (Range requests) vers un fichier
+    temporaire, puis décompresse et filtre par pays.
+
+    Le retry s'applique par chunk de 50MB — un fichier de 1.3GB nécessite ~27 chunks
+    au lieu de recommencer depuis le début à chaque erreur.
     """
     url = urljoin(base_url, filename)
 
-    for attempt in range(1, max_retries + 1):
-        logging.info(f"Downloading delta file: {url} (attempt {attempt}/{max_retries})")
-        try:
-            records = []
-            with session.get(url, timeout=300, stream=True) as response:
-                response.raise_for_status()
-                with gzip.GzipFile(fileobj=response.raw) as gz:
-                    for raw_line in gz:
-                        line = raw_line.decode("utf-8").strip()
-                        if line:
-                            record = json.loads(line)
-                            if _matches_country(record.get("countries_tags"), country):
-                                records.append(record)
-            return records
-        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, ProtocolError) as e:
-            if attempt == max_retries:
-                raise
-            wait = 2 ** attempt
-            logging.warning(f"Connection error on {filename} (attempt {attempt}/{max_retries}), retrying in {wait}s: {e}")
-            time.sleep(wait)
+    head = session.head(url, timeout=30)
+    head.raise_for_status()
+    total_size = int(head.headers["Content-Length"])
+    logging.info(f"Downloading {filename} ({total_size / 1024 / 1024:.0f} MB) in {CHUNK_SIZE // 1024 // 1024} MB chunks...")
+
+    with tempfile.NamedTemporaryFile(suffix=".gz", delete=False) as tmp:
+        tmp_path = tmp.name
+        downloaded = 0
+        while downloaded < total_size:
+            end = min(downloaded + CHUNK_SIZE - 1, total_size - 1)
+            resp = session.get(url, headers={"Range": f"bytes={downloaded}-{end}"}, timeout=120)
+            resp.raise_for_status()
+            tmp.write(resp.content)
+            downloaded += len(resp.content)
+            logging.info(f"  {downloaded / total_size * 100:.1f}% ({downloaded // 1024 // 1024} MB / {total_size // 1024 // 1024} MB)")
+
+    try:
+        records = []
+        with gzip.open(tmp_path, "rt", encoding="utf-8") as gz:
+            for line in gz:
+                line = line.strip()
+                if line:
+                    record = json.loads(line)
+                    if _matches_country(record.get("countries_tags"), country):
+                        records.append(record)
+        return records
+    finally:
+        os.unlink(tmp_path)
 
 
 def handle(output_file_key, url, num_files=None, last_processed_file=None, country="canada"):
