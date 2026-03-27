@@ -5,7 +5,7 @@ import pytest
 import pandas as pd
 from io import BytesIO
 from unittest.mock import Mock, patch
-from commands.extract_delta import handle, _get_delta_filenames, _download_delta
+from commands.extract_delta import handle, _get_delta_filenames, _download_delta, _matches_country
 
 INDEX_URL = "https://static.openfoodfacts.org/data/delta/index.txt"
 BASE_URL = "https://static.openfoodfacts.org/data/delta/"
@@ -63,19 +63,32 @@ class TestExtractDelta:
         mock_response.__exit__ = Mock(return_value=False)
         return mock_response
 
+    def test_matches_country_exact_tag(self):
+        assert _matches_country(["en:canada", "en:france"], "canada") is True
+
+    def test_matches_country_no_match(self):
+        assert _matches_country(["en:france", "en:usa"], "canada") is False
+
+    def test_matches_country_case_insensitive(self):
+        assert _matches_country(["en:Canada"], "canada") is True
+
+    def test_matches_country_not_a_list(self):
+        assert _matches_country(None, "canada") is False
+        assert _matches_country("en:canada", "canada") is False
+
     def test_download_delta(self, gzipped_jsonl, delta_records):
         """Test downloading and decompressing a single delta file."""
         mock_session = Mock()
         mock_session.get.return_value = self._mock_stream_response(gzipped_jsonl)
 
-        records = _download_delta(mock_session, BASE_URL, "test_file.json.gz")
+        records = _download_delta(mock_session, BASE_URL, "test_file.json.gz", "canada")
 
         assert len(records) == 2
         assert records[0]["code"] == "123"
         assert records[1]["product_name"] == "Test Product B"
 
-    def test_download_delta_filters_non_canadian(self):
-        """Test that _download_delta only returns Canadian products."""
+    def test_download_delta_filters_by_country(self):
+        """Test that _download_delta only returns records matching the given country."""
         mixed_records = [
             {"code": "1", "countries_tags": ["en:canada"]},
             {"code": "2", "countries_tags": ["en:france"]},
@@ -87,10 +100,27 @@ class TestExtractDelta:
         mock_session = Mock()
         mock_session.get.return_value = self._mock_stream_response(content)
 
-        records = _download_delta(mock_session, BASE_URL, "test.json.gz")
+        records = _download_delta(mock_session, BASE_URL, "test.json.gz", "canada")
 
         assert len(records) == 2
         assert {r["code"] for r in records} == {"1", "3"}
+
+    def test_download_delta_different_country(self):
+        """Test that _download_delta works with a different country."""
+        mixed_records = [
+            {"code": "1", "countries_tags": ["en:canada"]},
+            {"code": "2", "countries_tags": ["en:france"]},
+        ]
+        jsonl = "\n".join(json.dumps(r) for r in mixed_records)
+        content = gzip.compress(jsonl.encode("utf-8"))
+
+        mock_session = Mock()
+        mock_session.get.return_value = self._mock_stream_response(content)
+
+        records = _download_delta(mock_session, BASE_URL, "test.json.gz", "france")
+
+        assert len(records) == 1
+        assert records[0]["code"] == "2"
 
     def test_handle_success(self, mock_env_vars, gzipped_jsonl):
         """Test successful delta extraction with all files."""
@@ -140,8 +170,8 @@ class TestExtractDelta:
 
             mock_s3.assert_not_called()
 
-    def test_handle_uploads_parquet(self, mock_env_vars):
-        """Test that uploaded content is valid parquet with the expected records."""
+    def test_handle_uploads_jsonl(self, mock_env_vars):
+        """Test that uploaded content is valid JSONL with the expected records."""
         canadian_records = [
             {"code": "1", "product_name": "Canadian", "countries_tags": ["en:canada"]},
             {"code": "3", "product_name": "Multi",    "countries_tags": ["en:canada", "en:usa"]},
@@ -159,11 +189,12 @@ class TestExtractDelta:
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("output/delta.parquet", INDEX_URL)
+            handle("output/delta.jsonl", INDEX_URL)
 
-        df = pd.read_parquet(BytesIO(uploaded["output/delta.parquet"]))
-        assert len(df) == 2
-        assert set(df["code"].tolist()) == {"1", "3"}
+        lines = uploaded["output/delta.jsonl"].decode("utf-8").strip().split("\n")
+        records = [json.loads(line) for line in lines]
+        assert len(records) == 2
+        assert {r["code"] for r in records} == {"1", "3"}
 
     def test_handle_no_canadian_products(self, mock_env_vars):
         """Test that nothing is uploaded when no Canadian products exist."""
@@ -194,7 +225,7 @@ class TestExtractDelta:
         all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
         processed = []
 
-        def fake_download(session, base_url, filename):
+        def fake_download(session, base_url, filename, country):
             processed.append(filename)
             return [{"code": "1", "countries_tags": ["en:canada"]}]
 
@@ -225,7 +256,7 @@ class TestExtractDelta:
         all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
         processed = []
 
-        def fake_download(session, base_url, filename):
+        def fake_download(session, base_url, filename, country):
             processed.append(filename)
             return [{"code": "1", "countries_tags": ["en:canada"]}]
 
@@ -243,7 +274,7 @@ class TestExtractDelta:
         all_files = ["1000_1100.json.gz", "1100_1200.json.gz", "1200_1300.json.gz"]
         processed = []
 
-        def fake_download(session, base_url, filename):
+        def fake_download(session, base_url, filename, country):
             processed.append(filename)
             return [{"code": "1", "countries_tags": ["en:canada"]}]
 

@@ -50,6 +50,13 @@ invalid_file_key = click.option(
     help='Output file key in S3 for invalid records (f2)'
 )
 
+country = click.option(
+    '--country',
+    type=str,
+    default='canada',
+    help='Country to filter delta records on (substring match against countries_tags, default: canada)'
+)
+
 last_processed_file = click.option(
     '--last_processed_file',
     type=str,

@@ -35,6 +35,7 @@ IMAGE_KEYS = [
 ]
 
 
+
 def _build_code_path(code):
     code_padded = str(code).zfill(13)
     return f"{code_padded[:3]}/{code_padded[3:6]}/{code_padded[6:9]}/{code_padded[9:]}"
@@ -76,8 +77,11 @@ def handle(input_file_key, output_file_key):
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
-    parquet_bytes = s3_handler.download_to_memory(input_file_key)
-    df = pd.read_parquet(parquet_bytes)
+    raw = s3_handler.download_to_memory(input_file_key)
+    if input_file_key.endswith(".jsonl"):
+        df = pd.read_json(raw, lines=True)
+    else:
+        df = pd.read_parquet(raw)
 
     # T2 — Transformations (format delta)
 
@@ -97,12 +101,15 @@ def handle(input_file_key, output_file_key):
         )
 
     # nutriscore_grade et ecoscore_grade: normaliser les valeurs non reconnues à NULL
-    df['nutriscore_grade'] = df['nutriscore_grade'].where(
-        df['nutriscore_grade'].isin(['a', 'b', 'c', 'd', 'e']), None
-    )
-    df['ecoscore_grade'] = df['ecoscore_grade'].where(
-        df['ecoscore_grade'].isin(['a-plus', 'a', 'b', 'c', 'd', 'e', 'f']), None
-    )
+    # Ces colonnes peuvent être absentes de certains enregistrements delta
+    if 'nutriscore_grade' in df.columns:
+        df['nutriscore_grade'] = df['nutriscore_grade'].where(
+            df['nutriscore_grade'].isin(['a', 'b', 'c', 'd', 'e']), None
+        )
+    if 'ecoscore_grade' in df.columns:
+        df['ecoscore_grade'] = df['ecoscore_grade'].where(
+            df['ecoscore_grade'].isin(['a-plus', 'a', 'b', 'c', 'd', 'e', 'f']), None
+        )
 
     # Projection sur le schéma Silver — garantit la compatibilité avec l'initial load
     for col in TARGET_COLUMNS:

@@ -11,9 +11,9 @@ from commands.transform_delta import (
 )
 
 
-def _df_to_parquet_bytes(df):
+def _df_to_jsonl_bytes(df):
     buf = BytesIO()
-    df.to_parquet(buf, index=False)
+    buf.write(df.to_json(orient="records", lines=True, force_ascii=False).encode("utf-8"))
     buf.seek(0)
     return buf
 
@@ -37,10 +37,14 @@ def mock_env_vars():
 
 @pytest.fixture
 def sample_df():
-    """DataFrame mimicking the delta parquet format (flat nutriments dict, selected images struct)."""
+    """DataFrame mimicking the delta JSONL format as read by pd.read_json(lines=True).
+
+    images and nutriments are native Python dicts — no serialization needed
+    since the bronze layer stores raw JSONL.
+    """
     return pd.DataFrame({
         "code": ["3017620422003"],
-        "product_name": ["Nutella"],           # already VARCHAR in delta
+        "product_name": ["Nutella"],
         "brands": ["Ferrero"],
         "nutriscore_grade": ["e"],
         "ecoscore_grade":   ["b"],
@@ -126,10 +130,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(sample_df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         df = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert df["product_name"].iloc[0] == "Nutella"
@@ -144,10 +148,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(sample_df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         df = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert df["front_url"].iloc[0] == "https://images.openfoodfacts.org/images/products/301/762/042/2003/front_en.42.400.jpg"
@@ -163,10 +167,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(sample_df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         df = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert df["energy_kcal_100g"].iloc[0] == 539.0
@@ -190,10 +194,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         result = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert result["nutriscore_grade"].iloc[0] == "a"
@@ -218,10 +222,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         result = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert result["ecoscore_grade"].iloc[0] == "a-plus"
@@ -239,10 +243,10 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(sample_df)
             mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
         df = _parquet_bytes_to_df(BytesIO(uploaded["delta_transformed.parquet"]))
         assert list(df.columns) == TARGET_COLUMNS
@@ -252,9 +256,9 @@ class TestTransformDelta:
         with patch("commands.transform_delta.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
+            mock_s3_instance.download_to_memory.return_value = _df_to_jsonl_bytes(sample_df)
 
-            handle("delta_valid.parquet", "delta_transformed.parquet")
+            handle("delta_valid.jsonl", "delta_transformed.parquet")
 
             mock_s3_instance.upload_from_memory.assert_called_once()
             assert mock_s3_instance.upload_from_memory.call_args[0][1] == "delta_transformed.parquet"
@@ -263,4 +267,4 @@ class TestTransformDelta:
         """KeyError is raised when S3 environment variables are missing."""
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(KeyError):
-                handle("delta_valid.parquet", "delta_transformed.parquet")
+                handle("delta_valid.jsonl", "delta_transformed.parquet")

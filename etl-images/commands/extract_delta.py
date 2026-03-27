@@ -2,7 +2,6 @@ import os
 import gzip
 import json
 import logging
-import pandas as pd
 import requests
 from io import BytesIO
 from urllib.parse import urljoin
@@ -19,13 +18,13 @@ def _get_delta_filenames(session, index_url):
     return filenames
 
 
-def _is_canadian(tags):
-    """Check if a product's countries_tags contains Canada."""
-    return isinstance(tags, list) and "en:canada" in tags
+def _matches_country(tags, country):
+    """Check if any of the countries_tags contains the given country string."""
+    return isinstance(tags, list) and any(country.lower() in tag.lower() for tag in tags)
 
 
-def _download_delta(session, base_url, filename):
-    """Stream a gzipped JSONL delta file and return only Canadian product records."""
+def _download_delta(session, base_url, filename, country):
+    """Stream a gzipped JSONL delta file and return only records matching the country."""
     url = urljoin(base_url, filename)
     logging.info(f"Downloading delta file: {url}")
 
@@ -37,12 +36,12 @@ def _download_delta(session, base_url, filename):
                 line = raw_line.decode("utf-8").strip()
                 if line:
                     record = json.loads(line)
-                    if _is_canadian(record.get("countries_tags")):
+                    if _matches_country(record.get("countries_tags"), country):
                         records.append(record)
     return records
 
 
-def handle(output_file_key, url, num_files=None, last_processed_file=None):
+def handle(output_file_key, url, num_files=None, last_processed_file=None, country="canada"):
     """Download delta exports, merge them, and upload as parquet to S3.
 
     Args:
@@ -89,9 +88,9 @@ def handle(output_file_key, url, num_files=None, last_processed_file=None):
 
     all_records = []
     for filename in filenames:
-        records = _download_delta(session, base_url, filename)
+        records = _download_delta(session, base_url, filename, country)
         all_records.extend(records)
-        logging.info(f"  {filename}: {len(records)} Canadian records")
+        logging.info(f"  {filename}: {len(records)} {country} records")
 
     if not all_records:
         logging.warning("No Canadian products found in delta files.")
@@ -99,14 +98,12 @@ def handle(output_file_key, url, num_files=None, last_processed_file=None):
 
     logging.info(f"Total Canadian records: {len(all_records)}")
 
-    df = pd.DataFrame(all_records)
-    parquet_bytes = BytesIO()
-    df.to_parquet(parquet_bytes, index=False)
-    parquet_bytes.seek(0)
+    jsonl = "\n".join(json.dumps(record, ensure_ascii=False) for record in all_records)
+    file_bytes = BytesIO(jsonl.encode("utf-8"))
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
-    s3_handler.upload_from_memory(parquet_bytes, output_file_key)
+    s3_handler.upload_from_memory(file_bytes, output_file_key)
 
-    logging.info(f"Delta data uploaded to S3 at '{output_file_key}' ({len(df)} records)")
+    logging.info(f"Delta data uploaded to S3 at '{output_file_key}' ({len(all_records)} records)")
     # Préfixe standardisé pour que le DAG puisse extraire cette valeur et mettre à jour la Variable Airflow
     logging.info(f"LAST_PROCESSED_FILE={filenames[-1]}")
