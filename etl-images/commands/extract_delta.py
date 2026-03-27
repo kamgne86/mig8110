@@ -123,5 +123,14 @@ def handle(output_file_key, url, num_files=None, last_processed_file=None, count
     s3_handler.upload_from_memory(file_bytes, output_file_key)
 
     logging.info(f"Delta data uploaded to S3 at '{output_file_key}' ({len(all_records)} records)")
-    # Préfixe standardisé pour que le DAG puisse extraire cette valeur et mettre à jour la Variable Airflow
-    logging.info(f"LAST_PROCESSED_FILE={filenames[-1]}")
+
+    last_filename = filenames[-1]
+    xcom_dir = "/airflow/xcom"
+    try:
+        os.makedirs(xcom_dir, exist_ok=True)
+        with open(f"{xcom_dir}/return.json", "w") as f:
+            json.dump({"last_processed_file": last_filename}, f)
+        logging.info(f"XCom written: last_processed_file={last_filename}")
+    except OSError:
+        # Hors Kubernetes (tests locaux), le répertoire n'existe pas
+        logging.info(f"LAST_PROCESSED_FILE={last_filename}")
