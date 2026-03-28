@@ -2,15 +2,19 @@
 DAG: off_weekly_delta_load
 Pipeline: incremental load of Open Food Facts delta files into MotherDuck.
 
-Steps (target):
-  fetch_delta_index  → save_delta_file_list → extract_delta → filter_delta
-  → validate_delta → transform_delta → load_delta → end
+Steps:
+  fetch_delta_index    : Reads index.txt and writes the sorted file list to XCom
+  save_delta_file_list : Persists the file list in an Airflow Variable
+  process_delta_files  : For each file in the list:
+    extract_delta      : Downloads the .json.gz, filters by country, uploads parquet to S3
+    filter_data        : Selects only the relevant columns
+    validate_data      : Separates valid and invalid records
+    transform_delta    : Builds image URLs, flattens nutriments, projects to Silver schema
 """
 import datetime
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
 from airflow.utils.task_group import TaskGroup
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
@@ -28,6 +32,8 @@ args = {
 dag = DAG(
     dag_id=DAG_ID,
     default_args=args,
+    max_active_runs=1,
+    concurrency=1, 
     schedule_interval='@weekly',
     catchup=False,
     tags=['mig8110', 'off', 'delta']
@@ -40,8 +46,27 @@ s3_env_vars = {
     "S3_BUCKET": "{{ conn.s3_conn.schema }}",
 }
 
+duckdb_env_vars = {
+    "DUCKDB_TOKEN": "{{ conn.duckdb_default.password }}",
+    "DUCKDB_DB":    "{{ conn.duckdb_default.schema }}",
+}
+
+airflow_env_vars = {
+    "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
+}
+
 DELTA_INDEX_URL = "https://static.openfoodfacts.org/data/delta/index.txt"
-AIRFLOW_VAR_DELTA_FILE_LIST = "delta_file_list"
+DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
+
+AIRFLOW_VAR_DELTA_FILE_LIST    = "delta_file_list"
+AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
+
+FILTER_COLUMNS = ",".join([
+    "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
+    "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
+    "ecoscore_score", "ecoscore_grade", "images", "ingredients_tags",
+    "nutriscore_score", "nutriscore_grade", "nutriments",
+])
 
 with dag:
 
@@ -59,7 +84,7 @@ with dag:
         do_xcom_push=True,
     )
 
-    # Read the XCom list and persist it in an Airflow Variable for the next run
+    # Read the XCom list and persist it in an Airflow Variable for subsequent runs
     def _save_delta_file_list(ti):
         filenames = ti.xcom_pull(task_ids='fetch-delta-index')
         Variable.set(AIRFLOW_VAR_DELTA_FILE_LIST, filenames, serialize_json=True)
@@ -72,17 +97,93 @@ with dag:
 
     end = EmptyOperator(task_id='end')
 
-    delta_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
+    # Compute which files to process at DAG parse time:
+    # - First run (last_processed_file=None): process all files in the list
+    # - Subsequent runs: process only files strictly after the last processed one
+    all_delta_files   = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
+    last_processed    = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+    files_to_process  = [f for f in all_delta_files if f > last_processed] if last_processed else all_delta_files
+
+    # Save the last processed file after all delta files have been processed
+    def _update_checkpoint():
+        if files_to_process:
+            Variable.set(AIRFLOW_VAR_LAST_PROCESSED_FILE, files_to_process[-1])
+
+    update_checkpoint = PythonOperator(
+        task_id='update_checkpoint',
+        python_callable=_update_checkpoint,
+        dag=dag,
+    )
 
     with TaskGroup(group_id='process_delta_files') as process_group:
-        for filename in delta_files:
-            BashOperator(
-                task_id=f"log_{filename}",
-                bash_command=f"echo 'Would process: {filename}'",
+        for filename in files_to_process:
+            stem = filename.replace(".json.gz", "")
+
+            raw_key         = f"{DAG_ID}/delta/{stem}.parquet"
+            filtered_key    = f"{DAG_ID}/delta/{stem}_filtered.parquet"
+            valid_key       = f"{DAG_ID}/delta/{stem}_valid.parquet"
+            invalid_key     = f"{DAG_ID}/delta/{stem}_invalid.parquet"
+            transformed_key = f"{DAG_ID}/delta/{stem}_transformed.parquet"
+
+            # Download .json.gz, filter by country, serialize to parquet
+            extract = CustomKubernetesPodOperator(
                 dag=dag,
+                name=f"extract-delta-{stem}",
+                task_id=f"extract_delta_{stem}",
+                image=IMAGE,
+                env_vars={**s3_env_vars},
+                arguments=[
+                    "--command", "extract_delta",
+                    "--filename", filename,
+                    "--base_url", DELTA_BASE_URL,
+                    "--output_file_key", raw_key,
+                ],
             )
 
-    start >> fetch_delta_index >> save_delta_file_list >> process_group >> end
+            # Select only the relevant columns
+            filter_data = CustomKubernetesPodOperator(
+                dag=dag,
+                name=f"filter-data-{stem}",
+                task_id=f"filter_data_{stem}",
+                image=IMAGE,
+                env_vars={**s3_env_vars},
+                arguments=[
+                    "--command", "filter_data",
+                    "--input_file_key",  raw_key,
+                    "--output_file_key", filtered_key,
+                    "--columns", FILTER_COLUMNS,
+                ],
+            )
 
-    # TODO: replace BashOperator with the real pipeline tasks
-    # extract_delta >> filter_delta >> validate_delta >> transform_delta >> load_delta
+            # Separate valid and invalid records
+            validate_data = CustomKubernetesPodOperator(
+                dag=dag,
+                name=f"validate-data-{stem}",
+                task_id=f"validate_data_{stem}",
+                image=IMAGE,
+                env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
+                arguments=[
+                    "--command", "validate_data",
+                    "--input_file_key",   filtered_key,
+                    "--output_file_key",  valid_key,
+                    "--invalid_file_key", invalid_key,
+                ],
+            )
+
+            # Build image URLs, flatten nutriments, project to Silver schema
+            transform_delta = CustomKubernetesPodOperator(
+                dag=dag,
+                name=f"transform-delta-{stem}",
+                task_id=f"transform_delta_{stem}",
+                image=IMAGE,
+                env_vars={**s3_env_vars},
+                arguments=[
+                    "--command", "transform_delta",
+                    "--input_file_key",  valid_key,
+                    "--output_file_key", transformed_key,
+                ],
+            )
+
+            extract >> filter_data >> validate_data >> transform_delta
+
+    start >> fetch_delta_index >> save_delta_file_list >> process_group >> update_checkpoint >> end
