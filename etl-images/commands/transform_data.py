@@ -1,7 +1,6 @@
 import os
 import logging
 import pandas as pd
-from io import BytesIO
 from common.s3 import S3FileHandler
 from config.target_columns import TARGET_COLUMNS
 
@@ -130,9 +129,6 @@ def handle(input_file_key, output_file_key):
             df[col] = None
     df = df[TARGET_COLUMNS]
 
-    transformed_bytes = BytesIO()
-    df.to_parquet(transformed_bytes, index=False)
-    transformed_bytes.seek(0)
-    s3_handler.upload_from_memory(transformed_bytes, output_file_key)
+    s3_handler.upload_dataframe(df, output_file_key)
 
     logger.info(f"Data uploaded to S3: {output_file_key} ({len(df)} records)")

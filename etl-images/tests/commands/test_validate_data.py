@@ -13,11 +13,6 @@ def _df_to_parquet_bytes(df):
     return buf
 
 
-def _parquet_bytes_to_df(buf):
-    buf.seek(0)
-    return pd.read_parquet(buf)
-
-
 @pytest.fixture
 def mock_env_vars():
     env_vars = {
@@ -59,51 +54,48 @@ class TestValidateData:
 
     def test_valid_records_are_uploaded(self, mock_env_vars, sample_df):
         """Valid records (non-null, non-empty code + non-null product_name) go to output_file_key."""
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
-        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+        with patch("commands.validate_data.S3FileHandler") as mock_s3, \
+             patch("commands.validate_data.record_run"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
 
-        valid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_valid.parquet"]))
-        assert list(valid_df["code"]) == ["111", "222"]
+            uploaded_dfs = {
+                call[0][1]: call[0][0]
+                for call in mock_s3_instance.upload_dataframe.call_args_list
+            }
+            assert list(uploaded_dfs["data_valid.parquet"]["code"]) == ["111", "222"]
 
     def test_invalid_records_are_uploaded(self, mock_env_vars, sample_df):
         """Invalid records (null/empty code or null product_name) go to invalid_file_key."""
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
-        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+        with patch("commands.validate_data.S3FileHandler") as mock_s3, \
+             patch("commands.validate_data.record_run"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
 
-        invalid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_invalid.parquet"]))
-        assert len(invalid_df) == 3
+            uploaded_dfs = {
+                call[0][1]: call[0][0]
+                for call in mock_s3_instance.upload_dataframe.call_args_list
+            }
+            assert len(uploaded_dfs["data_invalid.parquet"]) == 3
 
     def test_both_files_are_uploaded(self, mock_env_vars, sample_df):
         """Both valid and invalid files are always uploaded."""
-        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+        with patch("commands.validate_data.S3FileHandler") as mock_s3, \
+             patch("commands.validate_data.record_run"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
             handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
 
-            assert mock_s3_instance.upload_from_memory.call_count == 2
-            uploaded_keys = [call[0][1] for call in mock_s3_instance.upload_from_memory.call_args_list]
+            assert mock_s3_instance.upload_dataframe.call_count == 2
+            uploaded_keys = [call[0][1] for call in mock_s3_instance.upload_dataframe.call_args_list]
             assert "data_valid.parquet" in uploaded_keys
             assert "data_invalid.parquet" in uploaded_keys
 
@@ -124,21 +116,20 @@ class TestValidateData:
             "ingredients":      [ingredients, ingredients],
             "categories_tags":  [categories, categories],
         })
-        uploaded = {}
 
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
-        with patch("commands.validate_data.S3FileHandler") as mock_s3:
+        with patch("commands.validate_data.S3FileHandler") as mock_s3, \
+             patch("commands.validate_data.record_run"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
 
-        invalid_df = _parquet_bytes_to_df(BytesIO(uploaded["data_invalid.parquet"]))
-        assert len(invalid_df) == 0
+            uploaded_dfs = {
+                call[0][1]: call[0][0]
+                for call in mock_s3_instance.upload_dataframe.call_args_list
+            }
+            assert len(uploaded_dfs["data_invalid.parquet"]) == 0
 
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""

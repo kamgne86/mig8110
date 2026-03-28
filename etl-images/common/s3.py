@@ -25,6 +25,14 @@ class S3FileHandler:
     def download(self, s3_key, local_file_path):
         self.s3.download_file(self.s3_bucket, s3_key, local_file_path)
 
+    def upload_dataframe(self, df, s3_key):
+        """Sérialise un DataFrame en parquet et l'uploade sur S3."""
+        from io import BytesIO
+        buf = BytesIO()
+        df.to_parquet(buf, index=False)
+        buf.seek(0)
+        self.s3.upload_fileobj(buf, self.s3_bucket, s3_key)
+
     def download_to_memory(self, s3_key):
         """Télécharge un fichier depuis S3 en mémoire et retourne un BytesIO"""
         file_obj = BytesIO()

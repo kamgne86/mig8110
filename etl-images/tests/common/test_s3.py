@@ -1,6 +1,7 @@
 import pytest
 import tempfile
 import os
+import pandas as pd
 from io import BytesIO
 from unittest.mock import Mock, patch
 from common.s3 import S3FileHandler
@@ -86,6 +87,21 @@ class TestS3FileHandler:
         mock_client.upload_fileobj.assert_called_once_with(
             file_obj, "test-bucket", "test_key.txt"
         )
+
+    def test_upload_dataframe_success(self, s3_handler, mock_s3_client):
+        """Test that upload_dataframe serializes the DataFrame to parquet and uploads it"""
+        _, mock_client = mock_s3_client
+        df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+
+        s3_handler.upload_dataframe(df, "test_key.parquet")
+
+        mock_client.upload_fileobj.assert_called_once()
+        args = mock_client.upload_fileobj.call_args[0]
+        assert args[1] == "test-bucket"
+        assert args[2] == "test_key.parquet"
+        result_df = pd.read_parquet(args[0])
+        assert list(result_df.columns) == ["col1", "col2"]
+        assert len(result_df) == 2
 
     def test_download_success(self, s3_handler, mock_s3_client):
         """Test successful download of a file"""

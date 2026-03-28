@@ -48,10 +48,9 @@ class TestFilterData:
             handle("raw/input.parquet", "raw/filtered.parquet", columns)
 
             mock_s3.download_to_memory.assert_called_once_with("raw/input.parquet")
-            mock_s3.upload_from_memory.assert_called_once()
+            mock_s3.upload_dataframe.assert_called_once()
 
-            uploaded_bytes = mock_s3.upload_from_memory.call_args[0][0]
-            result_df = pd.read_parquet(uploaded_bytes)
+            result_df = mock_s3.upload_dataframe.call_args[0][0]
             assert list(result_df.columns) == ["code", "product_name", "brands"]
             assert "irrelevant_column" not in result_df.columns
 
@@ -67,8 +66,7 @@ class TestFilterData:
 
             handle("raw/input.parquet", "raw/filtered.parquet", columns)
 
-            uploaded_bytes = mock_s3.upload_from_memory.call_args[0][0]
-            result_df = pd.read_parquet(uploaded_bytes)
+            result_df = mock_s3.upload_dataframe.call_args[0][0]
             assert list(result_df.columns) == ["code", "product_name", "brands"]
 
     def test_handle_missing_env_var(self, parquet_data):

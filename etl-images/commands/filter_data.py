@@ -1,7 +1,6 @@
 import os
 import logging
 import pandas as pd
-from io import BytesIO
 from common.s3 import S3FileHandler
 
 logger = logging.getLogger(__name__)
@@ -22,10 +21,6 @@ def handle(input_file_key, output_file_key, columns):
     parquet_bytes = s3_handler.download_to_memory(input_file_key)
     df = pd.read_parquet(parquet_bytes, columns=column_list)
 
-    output_bytes = BytesIO()
-    df.to_parquet(output_bytes, index=False)
-    output_bytes.seek(0)
-
-    s3_handler.upload_from_memory(output_bytes, output_file_key)
+    s3_handler.upload_dataframe(df, output_file_key)
 
     logger.info(f"Data uploaded to S3: {output_file_key} ({len(df)} records, {len(column_list)} columns)")

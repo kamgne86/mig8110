@@ -1,7 +1,6 @@
 import os
 import logging
 import pandas as pd
-from io import BytesIO
 from common.s3 import S3FileHandler
 from common.monitoring import record_run
 from config.validation_rules import VALIDATION_RULES
@@ -31,10 +30,10 @@ def handle(input_file_key, output_file_key, invalid_file_key):
 
     logger.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
 
-    _upload_df(s3_handler, df_valid, output_file_key)
+    s3_handler.upload_dataframe(df_valid, output_file_key)
     logger.info(f"Data uploaded to S3: {output_file_key}")
 
-    _upload_df(s3_handler, df_invalid, invalid_file_key)
+    s3_handler.upload_dataframe(df_invalid, invalid_file_key)
     logger.info(f"Data uploaded to S3: {invalid_file_key}")
 
     record_run(
@@ -43,10 +42,3 @@ def handle(input_file_key, output_file_key, invalid_file_key):
         records_out=len(df_valid),
         records_rejected=len(df_invalid),
     )
-
-
-def _upload_df(s3_handler, df, file_key):
-    buf = BytesIO()
-    df.to_parquet(buf, index=False)
-    buf.seek(0)
-    s3_handler.upload_from_memory(buf, file_key)
