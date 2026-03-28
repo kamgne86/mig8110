@@ -2,8 +2,6 @@ import os
 import gzip
 import json
 import pytest
-import pandas as pd
-from io import BytesIO
 from unittest.mock import Mock, patch
 from commands.extract_delta import handle, _get_delta_filenames, _download_delta, _matches_country
 
@@ -54,14 +52,21 @@ class TestExtractDelta:
         assert filenames == ["file1.json.gz", "file2.json.gz", "file3.json.gz"]
         mock_session.get.assert_called_once_with(INDEX_URL, timeout=30)
 
-    def _mock_stream_response(self, gzipped_content):
-        """Create a mock streaming response with .raw as BytesIO."""
-        mock_response = Mock()
-        mock_response.raise_for_status = Mock()
-        mock_response.raw = BytesIO(gzipped_content)
-        mock_response.__enter__ = Mock(return_value=mock_response)
-        mock_response.__exit__ = Mock(return_value=False)
-        return mock_response
+    def _mock_download_session(self, gzipped_content):
+        """Create a mock session for Range-request based download (HEAD + GET per chunk)."""
+        mock_session = Mock()
+
+        mock_head = Mock()
+        mock_head.raise_for_status = Mock()
+        mock_head.headers = {"Content-Length": str(len(gzipped_content))}
+        mock_session.head.return_value = mock_head
+
+        mock_get = Mock()
+        mock_get.raise_for_status = Mock()
+        mock_get.content = gzipped_content
+        mock_session.get.return_value = mock_get
+
+        return mock_session
 
     def test_matches_country_exact_tag(self):
         assert _matches_country(["en:canada", "en:france"], "canada") is True
@@ -77,12 +82,12 @@ class TestExtractDelta:
         assert _matches_country("en:canada", "canada") is False
 
     def test_download_delta(self, gzipped_jsonl, delta_records):
-        """Test downloading and decompressing a single delta file."""
-        mock_session = Mock()
-        mock_session.get.return_value = self._mock_stream_response(gzipped_jsonl)
+        """Test downloading via Range requests and decompressing a single delta file."""
+        mock_session = self._mock_download_session(gzipped_jsonl)
 
         records = _download_delta(mock_session, BASE_URL, "test_file.json.gz", "canada")
 
+        mock_session.head.assert_called_once()
         assert len(records) == 2
         assert records[0]["code"] == "123"
         assert records[1]["product_name"] == "Test Product B"
@@ -97,10 +102,7 @@ class TestExtractDelta:
         jsonl = "\n".join(json.dumps(r) for r in mixed_records)
         content = gzip.compress(jsonl.encode("utf-8"))
 
-        mock_session = Mock()
-        mock_session.get.return_value = self._mock_stream_response(content)
-
-        records = _download_delta(mock_session, BASE_URL, "test.json.gz", "canada")
+        records = _download_delta(self._mock_download_session(content), BASE_URL, "test.json.gz", "canada")
 
         assert len(records) == 2
         assert {r["code"] for r in records} == {"1", "3"}
@@ -114,44 +116,25 @@ class TestExtractDelta:
         jsonl = "\n".join(json.dumps(r) for r in mixed_records)
         content = gzip.compress(jsonl.encode("utf-8"))
 
-        mock_session = Mock()
-        mock_session.get.return_value = self._mock_stream_response(content)
-
-        records = _download_delta(mock_session, BASE_URL, "test.json.gz", "france")
+        records = _download_delta(self._mock_download_session(content), BASE_URL, "test.json.gz", "france")
 
         assert len(records) == 1
         assert records[0]["code"] == "2"
 
-    def test_handle_success(self, mock_env_vars, gzipped_jsonl):
+    def test_handle_success(self, mock_env_vars):
         """Test successful delta extraction with all files."""
-        index_content = "1000_1100.json.gz\n1100_1200.json.gz\n"
+        canadian_records = [{"code": "1", "countries_tags": ["en:canada"]}]
 
-        with patch("commands.extract_delta.requests.Session") as mock_session_cls, \
+        with patch("commands.extract_delta._get_delta_filenames", return_value=["1000_1100.json.gz", "1100_1200.json.gz"]), \
+             patch("commands.extract_delta._download_delta", return_value=canadian_records), \
              patch("commands.extract_delta.S3FileHandler") as mock_s3:
 
-            mock_session = Mock()
-            mock_session_cls.return_value = mock_session
-
-            def side_effect(url, **kwargs):
-                if "index.txt" in url:
-                    mock_response = Mock()
-                    mock_response.raise_for_status = Mock()
-                    mock_response.text = index_content
-                    return mock_response
-                return self._mock_stream_response(gzipped_jsonl)
-
-            mock_session.get.side_effect = side_effect
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
 
-            handle("output/delta.parquet", INDEX_URL)
+            handle("output/delta.jsonl", INDEX_URL)
 
-            mock_s3.assert_called_once_with(
-                "test-bucket",
-                "https://s3.example.com",
-                "test-key",
-                "test-secret",
-            )
+            mock_s3.assert_called_once_with("test-bucket", "https://s3.example.com", "test-key", "test-secret")
             mock_s3_instance.upload_from_memory.assert_called_once()
 
     def test_handle_empty_index(self, mock_env_vars):

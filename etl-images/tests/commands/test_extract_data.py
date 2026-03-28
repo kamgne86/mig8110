@@ -64,7 +64,7 @@ class TestFullLoad:
             handle(output_key, url)
 
             # Assertions
-            mock_session.get.assert_called_once_with(url)
+            mock_session.get.assert_called_once_with(url, timeout=(10, 60))
             mock_s3.assert_called_once_with(
                 "test-bucket",
                 "https://s3.example.com",
@@ -87,6 +87,27 @@ class TestFullLoad:
 
             # Should raise BadZipFile error
             with pytest.raises(zipfile.BadZipFile):
+                handle(output_key, url)
+
+    def test_handle_no_parquet_in_zip(self, mock_env_vars):
+        """Test handling of zip with no parquet file"""
+        url = "https://example.com/no_parquet.zip"
+        output_key = "test_output.parquet"
+
+        # Create a zip with a non-parquet file
+        zip_bytes = BytesIO()
+        with zipfile.ZipFile(zip_bytes, "w") as zip_file:
+            zip_file.writestr("data.csv", "col1,col2\n1,a")
+        zip_bytes.seek(0)
+
+        with patch("commands.extract_data.requests.Session") as mock_session_cls:
+            mock_session = Mock()
+            mock_session_cls.return_value = mock_session
+            mock_response = Mock()
+            mock_response.content = zip_bytes.getvalue()
+            mock_session.get.return_value = mock_response
+
+            with pytest.raises(ValueError, match="No parquet file found in zip"):
                 handle(output_key, url)
 
     def test_handle_missing_env_var(self, data):

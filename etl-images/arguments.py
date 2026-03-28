@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta', 'transform_delta', 'merge_data']),
+    type=click.Choice(['extract_data', 'filter_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta', 'transform_delta', 'merge_data']),
     help='Command to execute'
 )
 
@@ -62,5 +62,12 @@ last_processed_file = click.option(
     type=str,
     default=None,
     help='Filename of the last successfully processed delta file (Airflow Variable). Only files after this one will be processed.'
+)
+
+columns = click.option(
+    '--columns',
+    type=str,
+    default=None,
+    help='Comma-separated list of columns to keep (e.g. code,product_name,brands)'
 )
 

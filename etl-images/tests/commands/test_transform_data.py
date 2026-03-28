@@ -109,8 +109,9 @@ class TestExtractImageUrl:
 class TestExtractNutriment:
 
     def test_extracts_correct_value(self):
-        lst = [{"name": "fat", "100g": 30.9}, {"name": "energy-kcal", "100g": 539.0}]
-        assert _extract_nutriment(lst, "energy-kcal") == 539.0
+        lst = [{"name": "fat", "100g": 30.9123}, {"name": "energy-kcal", "100g": 539.456}]
+        assert _extract_nutriment(lst, "energy-kcal") == 539.46
+        assert _extract_nutriment(lst, "fat") == 30.91
 
     def test_returns_none_when_nutriment_missing(self):
         lst = [{"name": "fat", "100g": 30.9}]
@@ -124,62 +125,44 @@ class TestTransformData:
 
     def test_product_name_is_extracted(self, mock_env_vars, sample_df):
         """product_name list is replaced by the 'main' text."""
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-        df = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
-        assert df["product_name"].iloc[0] == "Nutella"
+            df = mock_s3_instance.upload_dataframe.call_args[0][0]
+            assert df["product_name"].iloc[0] == "Nutella"
 
     def test_image_urls_are_built(self, mock_env_vars, sample_df):
         """Image URL columns are added from images list."""
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-        df = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
-        expected = "https://images.openfoodfacts.org/images/products/301/762/042/2003/front_en.42.400.jpg"
-        assert df["front_url"].iloc[0] == expected
+            df = mock_s3_instance.upload_dataframe.call_args[0][0]
+            expected = "https://images.openfoodfacts.org/images/products/301/762/042/2003/front_en.42.400.jpg"
+            assert df["front_url"].iloc[0] == expected
 
     def test_nutriments_are_extracted(self, mock_env_vars, sample_df):
         """Nutriment columns are added from nutriments list."""
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
-
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-        df = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
-        assert df["energy_kcal_100g"].iloc[0] == 539.0
-        assert df["fat_100g"].iloc[0] == 30.9
+            df = mock_s3_instance.upload_dataframe.call_args[0][0]
+            assert df["energy_kcal_100g"].iloc[0] == 539.0
+            assert df["fat_100g"].iloc[0] == 30.9
 
     def test_output_is_uploaded_once(self, mock_env_vars, sample_df):
-        """Exactly one file is uploaded (f3)."""
+        """Exactly one file is uploaded."""
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
@@ -187,8 +170,8 @@ class TestTransformData:
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-            mock_s3_instance.upload_from_memory.assert_called_once()
-            assert mock_s3_instance.upload_from_memory.call_args[0][1] == "data_transformed.parquet"
+            mock_s3_instance.upload_dataframe.assert_called_once()
+            assert mock_s3_instance.upload_dataframe.call_args[0][1] == "data_transformed.parquet"
 
     def test_invalid_nutriscore_grade_set_to_null(self, mock_env_vars):
         """nutriscore_grade values outside the valid whitelist are replaced by None."""
@@ -200,23 +183,18 @@ class TestTransformData:
             "images":     [[], [], []],
             "nutriments": [[], [], []],
         })
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
 
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-        result = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
-        assert result["nutriscore_grade"].iloc[0] == "a"
-        assert result["nutriscore_grade"].iloc[1] is None or pd.isna(result["nutriscore_grade"].iloc[1])
-        assert result["nutriscore_grade"].iloc[2] is None or pd.isna(result["nutriscore_grade"].iloc[2])
+            result = mock_s3_instance.upload_dataframe.call_args[0][0]
+            assert result["nutriscore_grade"].iloc[0] == "a"
+            assert result["nutriscore_grade"].iloc[1] is None or pd.isna(result["nutriscore_grade"].iloc[1])
+            assert result["nutriscore_grade"].iloc[2] is None or pd.isna(result["nutriscore_grade"].iloc[2])
 
     def test_invalid_ecoscore_grade_set_to_null(self, mock_env_vars):
         """ecoscore_grade values outside the valid whitelist are replaced by None.
@@ -229,23 +207,18 @@ class TestTransformData:
             "images":     [[], [], []],
             "nutriments": [[], [], []],
         })
-        uploaded = {}
-
-        def capture_upload(buf, key):
-            uploaded[key] = buf.read()
 
         with patch("commands.transform_data.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
-            mock_s3_instance.upload_from_memory.side_effect = capture_upload
 
             handle("data_valid.parquet", "data_transformed.parquet")
 
-        result = _parquet_bytes_to_df(BytesIO(uploaded["data_transformed.parquet"]))
-        assert result["ecoscore_grade"].iloc[0] == "a-plus"
-        assert result["ecoscore_grade"].iloc[1] is None or pd.isna(result["ecoscore_grade"].iloc[1])
-        assert result["ecoscore_grade"].iloc[2] is None or pd.isna(result["ecoscore_grade"].iloc[2])
+            result = mock_s3_instance.upload_dataframe.call_args[0][0]
+            assert result["ecoscore_grade"].iloc[0] == "a-plus"
+            assert result["ecoscore_grade"].iloc[1] is None or pd.isna(result["ecoscore_grade"].iloc[1])
+            assert result["ecoscore_grade"].iloc[2] is None or pd.isna(result["ecoscore_grade"].iloc[2])
 
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""

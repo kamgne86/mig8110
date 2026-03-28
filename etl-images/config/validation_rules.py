@@ -8,4 +8,6 @@ VALIDATION_RULES = [
     lambda df: df['code'].astype(str).str.strip() != '',
     lambda df: df['product_name'].notna(),
     lambda df: df['nutriments'].notna(),
+    # lambda df: df['ingredients'].notna(),
+    # lambda df: df['categories_tags'].notna(),
 ]

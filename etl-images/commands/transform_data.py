@@ -1,11 +1,10 @@
 import os
 import logging
 import pandas as pd
-from io import BytesIO
 from common.s3 import S3FileHandler
 from config.target_columns import TARGET_COLUMNS
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 BASE_IMAGE_URL = "https://images.openfoodfacts.org/images/products"
 
@@ -71,45 +70,51 @@ def _extract_nutriment(nutriments_list, nutriment_name):
     try:
         for item in nutriments_list:
             if item['name'] == nutriment_name:
-                return item['100g']
+                return round(item['100g'], 2)
     except TypeError:
         return None
     return None
 
 
 def handle(input_file_key, output_file_key):
-    logging.info(f"Transforming data from {input_file_key}...")
-
     s3_bucket = os.environ["S3_BUCKET"]
     s3_endpoint = os.environ["S3_ENDPOINT"]
     s3_access_key = os.environ["S3_ACCESS_KEY"]
     s3_secret_key = os.environ["S3_SECRET_KEY"]
+
+    logger.info(f"Transforming data from {input_file_key}...")
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
     parquet_bytes = s3_handler.download_to_memory(input_file_key)
     df = pd.read_parquet(parquet_bytes)
 
-    # T2 — Transformations
-
-    # product_name: extraire le texte "main" depuis la liste
+    # product_name: Open Food Facts stocke le nom du produit comme une liste d'objets
+    # [{lang, text}, ...]. On extrait uniquement le texte associé à lang="main",
+    # qui représente le nom canonique du produit toutes langues confondues.
     df['product_name'] = df['product_name'].apply(_extract_product_name)
 
-    # image URLs: construire depuis code + liste images
+    # image URLs: Open Food Facts ne fournit pas d'URLs directes mais une liste
+    # d'objets [{key, rev}, ...]. On reconstruit l'URL complète en combinant
+    # le code produit (converti en chemin hiérarchique 3/3/3/4) et le numéro
+    # de révision de l'image. Ex: .../301/762/042/2003/front_en.42.400.jpg
     for image_key, col_name in IMAGE_KEYS:
         df[col_name] = [
             _extract_image_url(images, code, image_key)
             for images, code in zip(df['images'], df['code'])
         ]
 
-    # nutriments: extraire les valeurs depuis la liste
+    # nutriments: les valeurs nutritionnelles sont stockées comme une liste
+    # d'objets [{name, 100g}, ...]. On pivote cette liste en colonnes plates
+    # (ex: fat_100g, sugars_100g) et on arrondit à 2 décimales.
     for nutriment_name, col_name in NUTRIMENTS:
         df[col_name] = df['nutriments'].apply(
             lambda lst, n=nutriment_name: _extract_nutriment(lst, n)
         )
 
-    # nutriscore_grade et ecoscore_grade: mettre à NULL les valeurs non reconnues
-    # afin de conserver les enregistrements tout en signalant l'absence de score
+    # nutriscore_grade / ecoscore_grade: certaines valeurs dans Open Food Facts
+    # sont hors whitelist (ex: "not-applicable", "unknown"). On les met à NULL
+    # pour conserver l'enregistrement tout en signalant l'absence de score valide.
     df['nutriscore_grade'] = df['nutriscore_grade'].where(
         df['nutriscore_grade'].isin(['a', 'b', 'c', 'd', 'e']), None
     )
@@ -117,16 +122,13 @@ def handle(input_file_key, output_file_key):
         df['ecoscore_grade'].isin(['a-plus', 'a', 'b', 'c', 'd', 'e', 'f']), None
     )
 
-    # Projection sur le schéma Silver — garantit la compatibilité avec le delta load
+    # Projection finale sur TARGET_COLUMNS: garantit un schéma uniforme entre
+    # le chargement initial et les deltas, requis pour le MERGE incrémental.
     for col in TARGET_COLUMNS:
         if col not in df.columns:
             df[col] = None
     df = df[TARGET_COLUMNS]
 
-    # Upload f3 (transformé) → output_file_key
-    transformed_bytes = BytesIO()
-    df.to_parquet(transformed_bytes, index=False)
-    transformed_bytes.seek(0)
-    s3_handler.upload_from_memory(transformed_bytes, output_file_key)
+    s3_handler.upload_dataframe(df, output_file_key)
 
-    logging.info(f"Transformed data uploaded to S3: {output_file_key} ({len(df)} records)")
+    logger.info(f"Data uploaded to S3: {output_file_key} ({len(df)} records)")

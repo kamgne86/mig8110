@@ -1,13 +1,21 @@
+import logging
 import click
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 from commands.load_data import handle as load_data
 from commands.load_delta import handle as load_delta
 from commands.extract_data import handle as extract_data
 from commands.extract_delta import handle as extract_delta
+from commands.filter_data import handle as filter_data
 from commands.validate_data import handle as validate_data
 from commands.transform_data import handle as transform_data
 from commands.transform_delta import handle as transform_delta
 from commands.merge_data import handle as merge_data
-from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files, invalid_file_key, last_processed_file, country
+from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files, invalid_file_key, last_processed_file, country, columns
 
 
 @click.command()
@@ -21,9 +29,12 @@ from arguments import command, url, output_file_key, input_file_key, table_name,
 @num_files
 @last_processed_file
 @country
-def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, num_files, last_processed_file, country):
+@columns
+def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, num_files, last_processed_file, country, columns):
     if command == "extract_data":
         extract_data(output_file_key, url)
+    elif command == "filter_data":
+        filter_data(input_file_key, output_file_key, columns)
     elif command == "validate_data":
         validate_data(input_file_key, output_file_key, invalid_file_key)
     elif command == "transform_data":

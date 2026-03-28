@@ -1,51 +1,44 @@
 import os
 import logging
 import pandas as pd
-from io import BytesIO
 from common.s3 import S3FileHandler
+from common.monitoring import record_run
 from config.validation_rules import VALIDATION_RULES
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def handle(input_file_key, output_file_key, invalid_file_key):
-    logging.info(f"Validating data from {input_file_key}...")
-
     s3_bucket = os.environ["S3_BUCKET"]
     s3_endpoint = os.environ["S3_ENDPOINT"]
     s3_access_key = os.environ["S3_ACCESS_KEY"]
     s3_secret_key = os.environ["S3_SECRET_KEY"]
 
+    logger.info(f"Validating data from {input_file_key}...")
+
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
     raw = s3_handler.download_to_memory(input_file_key)
-    if input_file_key.endswith(".jsonl"):
-        df = pd.read_json(raw, lines=True)
-    else:
-        df = pd.read_parquet(raw)
+    df = pd.read_parquet(raw)
 
-    # T1 — Appliquer toutes les règles de validation
-    mask_valid = pd.Series([True] * len(df), index=df.index)
+    mask = pd.Series(True, index=df.index)
     for rule in VALIDATION_RULES:
-        mask_valid &= rule(df)
+        mask &= rule(df)
 
-    df_valid = df[mask_valid].copy()
-    df_invalid = df[~mask_valid].copy()
+    df_valid   = df[mask].reset_index(drop=True)
+    df_invalid = df[~mask].reset_index(drop=True)
 
-    logging.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
+    logger.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
 
-    _upload_df(s3_handler, df_valid, output_file_key)
-    logging.info(f"Valid data uploaded to S3: {output_file_key}")
+    s3_handler.upload_dataframe(df_valid, output_file_key)
+    logger.info(f"Data uploaded to S3: {output_file_key}")
 
-    _upload_df(s3_handler, df_invalid, invalid_file_key)
-    logging.info(f"Invalid data uploaded to S3: {invalid_file_key}")
+    s3_handler.upload_dataframe(df_invalid, invalid_file_key)
+    logger.info(f"Data uploaded to S3: {invalid_file_key}")
 
-
-def _upload_df(s3_handler, df, file_key):
-    buf = BytesIO()
-    if file_key.endswith(".jsonl"):
-        buf.write(df.to_json(orient="records", lines=True, force_ascii=False).encode("utf-8"))
-    else:
-        df.to_parquet(buf, index=False)
-    buf.seek(0)
-    s3_handler.upload_from_memory(buf, file_key)
+    record_run(
+        command="validate_data",
+        records_in=len(df_valid) + len(df_invalid),
+        records_out=len(df_valid),
+        records_rejected=len(df_invalid),
+    )
