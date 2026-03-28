@@ -36,6 +36,17 @@ python run.py \
   --invalid_file_key=staging/openfoodfacts_invalid.parquet
 ```
 
+### transform_data
+
+Transforme les données validées : extrait le nom du produit, construit les URLs d'images, extrait les nutriments et projette sur le schéma final.
+
+```bash
+python run.py \
+  --command=transform_data \
+  --input_file_key=staging/openfoodfacts_valid.parquet \
+  --output_file_key=staging/openfoodfacts_transformed.parquet
+```
+
 ### filter_data
 
 Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.

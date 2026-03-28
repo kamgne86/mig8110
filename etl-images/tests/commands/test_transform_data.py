@@ -109,8 +109,9 @@ class TestExtractImageUrl:
 class TestExtractNutriment:
 
     def test_extracts_correct_value(self):
-        lst = [{"name": "fat", "100g": 30.9}, {"name": "energy-kcal", "100g": 539.0}]
-        assert _extract_nutriment(lst, "energy-kcal") == 539.0
+        lst = [{"name": "fat", "100g": 30.9123}, {"name": "energy-kcal", "100g": 539.456}]
+        assert _extract_nutriment(lst, "energy-kcal") == 539.46
+        assert _extract_nutriment(lst, "fat") == 30.91
 
     def test_returns_none_when_nutriment_missing(self):
         lst = [{"name": "fat", "100g": 30.9}]
