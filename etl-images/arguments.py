@@ -37,11 +37,18 @@ schema_name = click.option(
     help='DuckDB schema name'
 )
 
-num_files = click.option(
-    '--num_files',
-    type=int,
+filename = click.option(
+    '--filename',
+    type=str,
     default=None,
-    help='Number of most recent delta files to process (default: all)'
+    help='Delta filename to process (e.g. openfoodfacts_products_xxx.json.gz)'
+)
+
+base_url = click.option(
+    '--base_url',
+    type=str,
+    default=None,
+    help='Base URL of the delta directory (e.g. https://static.openfoodfacts.org/data/delta/)'
 )
 
 invalid_file_key = click.option(
@@ -55,13 +62,6 @@ country = click.option(
     type=str,
     default='canada',
     help='Country to filter delta records on (substring match against countries_tags, default: canada)'
-)
-
-last_processed_file = click.option(
-    '--last_processed_file',
-    type=str,
-    default=None,
-    help='Filename of the last successfully processed delta file (Airflow Variable). Only files after this one will be processed.'
 )
 
 columns = click.option(

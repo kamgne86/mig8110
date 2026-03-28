@@ -16,7 +16,7 @@ from commands.transform_data import handle as transform_data
 from commands.transform_delta import handle as transform_delta
 from commands.fetch_delta_index import handle as fetch_delta_index
 from commands.merge_data import handle as merge_data
-from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files, invalid_file_key, last_processed_file, country, columns
+from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, filename, base_url, invalid_file_key, country, columns
 
 
 @click.command()
@@ -27,11 +27,11 @@ from arguments import command, url, output_file_key, input_file_key, table_name,
 @invalid_file_key
 @table_name
 @schema_name
-@num_files
-@last_processed_file
+@filename
+@base_url
 @country
 @columns
-def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, num_files, last_processed_file, country, columns):
+def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, filename, base_url, country, columns):
     if command == "extract_data":
         extract_data(output_file_key, url)
     elif command == "filter_data":
@@ -43,7 +43,7 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
     elif command == "load_data":
         load_data(input_file_key, table_name, schema_name)
     elif command == "extract_delta":
-        extract_delta(output_file_key, url, num_files, last_processed_file, country)
+        extract_delta(filename, output_file_key, base_url, country)
     elif command == "load_delta":
         load_delta(input_file_key, table_name, schema_name)
     elif command == "transform_delta":
@@ -53,6 +53,6 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
     elif command == "merge_data":
         merge_data(input_file_key, table_name, schema_name)
 
-        
+
 if __name__ == '__main__':
     main()
