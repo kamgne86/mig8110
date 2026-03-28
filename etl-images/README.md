@@ -23,3 +23,15 @@ python run.py \
   --url=https://raw.githubusercontent.com/adilblanco/mig8110/main/data/canada_products.parquet.zip \
   --output_file_key=raw/openfoodfacts.parquet
 ```
+
+### filter_data
+
+Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
+
+```bash
+python run.py \
+  --command=filter_data \
+  --input_file_key=raw/openfoodfacts.parquet \
+  --output_file_key=raw/openfoodfacts_filtered.parquet \
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments
+```
