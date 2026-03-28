@@ -14,6 +14,7 @@ from commands.filter_data import handle as filter_data
 from commands.validate_data import handle as validate_data
 from commands.transform_data import handle as transform_data
 from commands.transform_delta import handle as transform_delta
+from commands.fetch_delta_index import handle as fetch_delta_index
 from commands.merge_data import handle as merge_data
 from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, num_files, invalid_file_key, last_processed_file, country, columns
 
@@ -47,6 +48,8 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
         load_delta(input_file_key, table_name, schema_name)
     elif command == "transform_delta":
         transform_delta(input_file_key, output_file_key)
+    elif command == "fetch_delta_index":
+        fetch_delta_index(url)
     elif command == "merge_data":
         merge_data(input_file_key, table_name, schema_name)
 
