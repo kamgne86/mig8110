@@ -24,6 +24,18 @@ python run.py \
   --output_file_key=raw/openfoodfacts.parquet
 ```
 
+### filter_data
+
+Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
+
+```bash
+python run.py \
+  --command=filter_data \
+  --input_file_key=raw/openfoodfacts.parquet \
+  --output_file_key=raw/openfoodfacts_filtered.parquet \
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments
+```
+
 ### validate_data
 
 Valide les enregistrements du parquet filtré. Les enregistrements valides et invalides sont uploadés séparément sur S3.
@@ -47,14 +59,14 @@ python run.py \
   --output_file_key=staging/openfoodfacts_transformed.parquet
 ```
 
-### filter_data
+### load_data
 
-Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
+Charge le parquet transformé depuis S3 et l'insère dans une table MotherDuck (DuckDB).
 
 ```bash
 python run.py \
-  --command=filter_data \
-  --input_file_key=raw/openfoodfacts.parquet \
-  --output_file_key=raw/openfoodfacts_filtered.parquet \
-  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments
+  --command=load_data \
+  --input_file_key=staging/openfoodfacts_transformed.parquet \
+  --table_name=canada_products \
+  --schema_name=staging
 ```
