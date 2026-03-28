@@ -18,18 +18,14 @@ def handle(input_file_key, table_name, schema_name):
 
     logger.info(f"Loading {input_file_key} from S3 to DuckDB...")
 
-    is_jsonl = input_file_key.endswith(".jsonl")
-    suffix = ".jsonl" if is_jsonl else ".parquet"
-
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp:
         s3_handler.download(input_file_key, tmp.name)
 
-        read_fn = f"read_json_auto('{tmp.name}')" if is_jsonl else f"read_parquet('{tmp.name}')"
-
         con = duckdb.connect(f"md:{motherduck_db}?motherduck_token={motherduck_token}")
-        con.sql(f"CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} AS SELECT * FROM {read_fn} WHERE 1=0")
-        con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM {read_fn}")
+        # CREATE OR REPLACE recrée la table à chaque exécution (chargement initial).
+        # Pour le chargement incrémental (delta), une commande dédiée gère l'append.
+        con.sql(f"CREATE OR REPLACE TABLE {schema_name}.{table_name} AS SELECT * FROM read_parquet('{tmp.name}')")
         con.close()
 
-    logger.info(f"Data inserted into DuckDB table '{schema_name}.{table_name}'")
+    logger.info(f"Data loaded into DuckDB table '{schema_name}.{table_name}'")
