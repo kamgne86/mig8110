@@ -14,11 +14,17 @@ def record_run(command, records_in, records_out, records_rejected=0):
 
     Le dag_run_id est lu depuis la variable d'environnement AIRFLOW_CTX_DAG_RUN_ID,
     injectée automatiquement par Airflow dans les pods Kubernetes.
-    En dehors d'Airflow (tests locaux), la valeur par défaut est "local".
+    Hors Airflow (exécution locale), la fonction log uniquement sans écrire en base
+    afin d'éviter de polluer la table de monitoring de production.
     """
+    dag_run_id = os.environ.get("AIRFLOW_CTX_DAG_RUN_ID")
+
+    if not dag_run_id:
+        logger.info(f"Monitoring (local): {records_in} in, {records_out} out, {records_rejected} rejected")
+        return
+
     motherduck_token = os.environ["DUCKDB_TOKEN"]
     motherduck_db = os.environ["DUCKDB_DB"]
-    dag_run_id = os.environ.get("AIRFLOW_CTX_DAG_RUN_ID", "local")
 
     rejection_rate = round(records_rejected / records_in * 100, 2) if records_in > 0 else 0.0
     executed_at = datetime.now(timezone.utc)
