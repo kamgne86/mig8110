@@ -10,6 +10,8 @@ import datetime
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from airflow.utils.task_group import TaskGroup
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
 IMAGE = "mig8110/etl-images:1.0.0"
@@ -70,7 +72,17 @@ with dag:
 
     end = EmptyOperator(task_id='end')
 
-    start >> fetch_delta_index >> save_delta_file_list >> end
+    delta_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
 
-    # TODO: add remaining delta pipeline tasks
-    # save_delta_file_list >> extract_delta >> filter_delta >> validate_delta >> transform_delta >> load_delta >> end
+    with TaskGroup(group_id='process_delta_files') as process_group:
+        for filename in delta_files:
+            BashOperator(
+                task_id=f"log_{filename}",
+                bash_command=f"echo 'Would process: {filename}'",
+                dag=dag,
+            )
+
+    start >> fetch_delta_index >> save_delta_file_list >> process_group >> end
+
+    # TODO: replace BashOperator with the real pipeline tasks
+    # extract_delta >> filter_delta >> validate_delta >> transform_delta >> load_delta
