@@ -1,4 +1,11 @@
+import logging
 import click
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 from commands.load_data import handle as load_data
 from commands.load_delta import handle as load_delta
 from commands.extract_data import handle as extract_data
