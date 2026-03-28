@@ -34,6 +34,8 @@ def mock_env_vars():
 def sample_df():
     """DataFrame with 2 valid records and 3 invalid records."""
     nutriments = [{"name": "energy-kcal", "100g": 100.0}]
+    ingredients = [{"id": "en:water", "text": "Water"}]
+    categories = ["en:beverages"]
     return pd.DataFrame({
         "code":             ["111",   "222",   None,    "",      "555"],
         "product_name": [
@@ -47,6 +49,8 @@ def sample_df():
         "nutriscore_grade": ["a",     "b",     "c",     "d",     "e"],
         "ecoscore_grade":   ["a",     "b",     "c",     "d",     "e"],
         "nutriments":       [nutriments, nutriments, nutriments, nutriments, nutriments],
+        "ingredients":      [ingredients, ingredients, ingredients, ingredients, ingredients],
+        "categories_tags":  [categories, categories, categories, categories, categories],
     })
 
 
@@ -106,6 +110,8 @@ class TestValidateData:
     def test_all_valid(self, mock_env_vars):
         """When all records are valid, invalid file is empty."""
         nutriments = [{"name": "energy-kcal", "100g": 100.0}]
+        ingredients = [{"id": "en:water", "text": "Water"}]
+        categories = ["en:beverages"]
         df = pd.DataFrame({
             "code": ["111", "222"],
             "product_name": [
@@ -115,6 +121,8 @@ class TestValidateData:
             "nutriscore_grade": ["a", "b"],
             "ecoscore_grade":   ["a", "b"],
             "nutriments":       [nutriments, nutriments],
+            "ingredients":      [ingredients, ingredients],
+            "categories_tags":  [categories, categories],
         })
         uploaded = {}
 

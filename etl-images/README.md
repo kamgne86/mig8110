@@ -24,6 +24,18 @@ python run.py \
   --output_file_key=raw/openfoodfacts.parquet
 ```
 
+### validate_data
+
+Valide les enregistrements du parquet filtré. Les enregistrements valides et invalides sont uploadés séparément sur S3.
+
+```bash
+python run.py \
+  --command=validate_data \
+  --input_file_key=raw/openfoodfacts_filtered.parquet \
+  --output_file_key=staging/openfoodfacts_valid.parquet \
+  --invalid_file_key=staging/openfoodfacts_invalid.parquet
+```
+
 ### filter_data
 
 Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
