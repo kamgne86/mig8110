@@ -157,8 +157,8 @@ class TestExtractDelta:
             assert result_df["max_imgid"].iloc[0] == "5"
             assert result_df["max_imgid"].iloc[1] == "7"
 
-    def test_nothing_uploaded_when_no_records(self, mock_env_vars):
-        """Nothing is uploaded when no records match the country filter."""
+    def test_empty_parquet_uploaded_when_no_records(self, mock_env_vars):
+        """An empty parquet is uploaded when no records match the country filter."""
         with patch("commands.extract_delta._download_and_filter", return_value=[]), \
              patch("commands.extract_delta.requests.Session"), \
              patch("commands.extract_delta.S3FileHandler") as mock_s3:
@@ -168,7 +168,9 @@ class TestExtractDelta:
 
             handle(FILENAME, "delta/output.parquet", BASE_URL)
 
-            mock_s3_instance.upload_dataframe.assert_not_called()
+            mock_s3_instance.upload_dataframe.assert_called_once()
+            result_df = mock_s3_instance.upload_dataframe.call_args[0][0]
+            assert len(result_df) == 0
 
     def test_missing_env_var(self):
         """KeyError is raised when S3 environment variables are missing."""

@@ -80,8 +80,7 @@ def handle(filename, output_file_key, base_url, country="canada"):
     records = _download_and_filter(session, url, country)
 
     if not records:
-        logger.warning(f"No {country} records found in {filename}.")
-        return
+        logger.warning(f"No {country} records found in {filename}, uploading empty parquet.")
 
     logger.info(f"Found {len(records)} {country} records in {filename}.")
 
