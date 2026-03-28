@@ -7,7 +7,7 @@ Steps:
   save_delta_file_list : Persists the file list in an Airflow Variable
   process_delta_files  : For each file in the list:
     extract_delta      : Downloads the .json.gz, filters by country, uploads parquet to S3
-    filter_data        : Selects only the relevant columns
+    filter_delta       : Selects only the relevant columns (with fallback for renamed fields)
     validate_data      : Separates valid and invalid records
     transform_delta    : Builds image URLs, flattens nutriments, projects to Silver schema
 """
@@ -61,10 +61,13 @@ DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
 AIRFLOW_VAR_DELTA_FILE_LIST    = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
 
-FILTER_COLUMNS = ",".join([
+# Pipe syntax (target|fallback) handles fields renamed between delta file versions
+FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
-    "ecoscore_score", "ecoscore_grade", "images", "ingredients_tags",
+    "ecoscore_score|environmental_score_score",
+    "ecoscore_grade|environmental_score_grade",
+    "images", "ingredients_tags",
     "nutriscore_score", "nutriscore_grade", "nutriments",
 ])
 
@@ -140,18 +143,18 @@ with dag:
                 ],
             )
 
-            # Select only the relevant columns
-            filter_data = CustomKubernetesPodOperator(
+            # Select only the relevant columns (with fallback for renamed delta fields)
+            filter_delta = CustomKubernetesPodOperator(
                 dag=dag,
-                name=f"filter-data-{stem}",
-                task_id=f"filter_data_{stem}",
+                name=f"filter-delta-{stem}",
+                task_id=f"filter_delta_{stem}",
                 image=IMAGE,
                 env_vars={**s3_env_vars},
                 arguments=[
-                    "--command", "filter_data",
+                    "--command", "filter_delta",
                     "--input_file_key",  raw_key,
                     "--output_file_key", filtered_key,
-                    "--columns", FILTER_COLUMNS,
+                    "--columns", FILTER_DELTA_COLUMNS,
                 ],
             )
 
@@ -184,6 +187,6 @@ with dag:
                 ],
             )
 
-            extract >> filter_data >> validate_data >> transform_delta
+            extract >> filter_delta >> validate_data >> transform_delta
 
     start >> fetch_delta_index >> save_delta_file_list >> process_group >> update_checkpoint >> end
