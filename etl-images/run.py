@@ -11,6 +11,7 @@ from commands.load_delta import handle as load_delta
 from commands.extract_data import handle as extract_data
 from commands.extract_delta import handle as extract_delta
 from commands.filter_data import handle as filter_data
+from commands.filter_delta import handle as filter_delta
 from commands.validate_data import handle as validate_data
 from commands.transform_data import handle as transform_data
 from commands.transform_delta import handle as transform_delta
@@ -44,6 +45,8 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
         load_data(input_file_key, table_name, schema_name)
     elif command == "extract_delta":
         extract_delta(filename, output_file_key, base_url, country)
+    elif command == "filter_delta":
+        filter_delta(input_file_key, output_file_key, columns)
     elif command == "load_delta":
         load_delta(input_file_key, table_name, schema_name)
     elif command == "transform_delta":
