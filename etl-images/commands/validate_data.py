@@ -3,6 +3,7 @@ import logging
 import pandas as pd
 from io import BytesIO
 from common.s3 import S3FileHandler
+from common.monitoring import record_run
 from config.validation_rules import VALIDATION_RULES
 
 logger = logging.getLogger(__name__)
@@ -19,18 +20,14 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
     raw = s3_handler.download_to_memory(input_file_key)
-    reader = pd.read_json(raw, lines=True, chunksize=500) if input_file_key.endswith(".jsonl") else [pd.read_parquet(raw)]
+    df = pd.read_parquet(raw)
 
-    chunks_valid, chunks_invalid = [], []
-    for chunk in reader:
-        mask = pd.Series(True, index=chunk.index)
-        for rule in VALIDATION_RULES:
-            mask &= rule(chunk)
-        chunks_valid.append(chunk[mask])
-        chunks_invalid.append(chunk[~mask])
+    mask = pd.Series(True, index=df.index)
+    for rule in VALIDATION_RULES:
+        mask &= rule(df)
 
-    df_valid   = pd.concat(chunks_valid,   ignore_index=True)
-    df_invalid = pd.concat(chunks_invalid, ignore_index=True)
+    df_valid   = df[mask].reset_index(drop=True)
+    df_invalid = df[~mask].reset_index(drop=True)
 
     logger.info(f"Valid: {len(df_valid)} records, Invalid: {len(df_invalid)} records")
 
@@ -40,12 +37,16 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     _upload_df(s3_handler, df_invalid, invalid_file_key)
     logger.info(f"Data uploaded to S3: {invalid_file_key}")
 
+    record_run(
+        command="validate_data",
+        records_in=len(df_valid) + len(df_invalid),
+        records_out=len(df_valid),
+        records_rejected=len(df_invalid),
+    )
+
 
 def _upload_df(s3_handler, df, file_key):
     buf = BytesIO()
-    if file_key.endswith(".jsonl"):
-        buf.write(df.to_json(orient="records", lines=True, force_ascii=False).encode("utf-8"))
-    else:
-        df.to_parquet(buf, index=False)
+    df.to_parquet(buf, index=False)
     buf.seek(0)
     s3_handler.upload_from_memory(buf, file_key)
