@@ -21,7 +21,7 @@ class TestLoadData:
             yield env_vars
 
     def test_handle_success(self, mock_env_vars):
-        """Test successful parquet load into DuckDB."""
+        """Test successful parquet load into DuckDB — table is replaced, not appended."""
         with patch("commands.load_data.S3FileHandler") as mock_s3, \
              patch("commands.load_data.duckdb.connect") as mock_connect:
 
@@ -43,8 +43,7 @@ class TestLoadData:
             mock_connect.assert_called_once_with("md:test-db?motherduck_token=test-token")
 
             sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
-            assert any("CREATE TABLE IF NOT EXISTS staging.canada_products" in s for s in sql_calls)
-            assert any("INSERT INTO staging.canada_products" in s for s in sql_calls)
+            assert any("CREATE OR REPLACE TABLE staging.canada_products" in s for s in sql_calls)
             assert any("read_parquet" in s for s in sql_calls)
 
             mock_con.close.assert_called_once()
