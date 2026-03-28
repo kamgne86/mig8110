@@ -1,3 +1,33 @@
+"""
+DAG : off_initial_load
+======================
+Chargement initial complet des produits alimentaires canadiens depuis Open Food Facts.
+Ce DAG est déclenché manuellement (schedule_interval=None) et doit être exécuté une seule
+fois pour initialiser les données, ou relancé pour un rechargement complet.
+
+Pipeline :
+    extract_data   : Télécharge le snapshot parquet depuis GitHub et le dépose sur S3 (Bronze)
+    filter_data    : Sélectionne les colonnes utiles pour réduire l'empreinte mémoire
+    load_bronze    : Charge le parquet filtré dans MotherDuck (off.raw)
+    validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
+    transform_data : Transforme les données : product_name, URLs d'images, nutriments à plat
+    load_silver    : Charge les données transformées dans MotherDuck (off.staging)
+    load_rejected  : Charge les enregistrements invalides dans MotherDuck (off.staging)
+
+Outputs S3 (bucket: bi-dev, préfixe: off_initial_load/) :
+    data.parquet              : Snapshot brut Open Food Facts
+    data_filtered.parquet     : Snapshot filtré (colonnes sélectionnées)
+    data_valid.parquet        : Enregistrements valides
+    data_invalid.parquet      : Enregistrements invalides (quarantaine)
+    data_transformed.parquet  : Enregistrements transformés prêts pour le chargement
+
+Outputs MotherDuck (base: off) :
+    raw.canada_products        : Données brutes filtrées (Bronze)
+    staging.source_transformed : Table cible principale — données transformées (Silver),
+                                 source des produits alimentaires pour l'application
+    staging.source_rejected    : Données invalides pour inspection
+    monitoring.pipeline_runs   : Métriques d'exécution (records_in, records_out, rejection_rate)
+"""
 import datetime
 from airflow.models import DAG
 from airflow.operators.empty import EmptyOperator
@@ -5,9 +35,8 @@ from plugins.operators.duckdb_operator import DuckDBOperator
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
 
-# --- Image ---
-IMAGE = "mig8110/etl-images:1.0.0"
-# --- DAG ID ---
+# Image
+IMAGE  = "mig8110/etl-images:1.0.0"
 DAG_ID = "off_initial_load"
 
 args = {
@@ -26,7 +55,7 @@ dag = DAG(
     tags=['mig8110', 'off']
 )
 
-# --- Connexions ---
+# Connexions
 s3_env_vars = {
     "S3_ENDPOINT":   "{{ conn.s3_conn.host }}",
     "S3_ACCESS_KEY": "{{ conn.s3_conn.login }}",
@@ -43,7 +72,7 @@ airflow_env_vars = {
     "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
 }
 
-# --- Base de données ---
+# Base de données
 DATABASE_NAME  = "off"
 RAW_SCHEMA     = "raw"
 STAGING_SCHEMA = "staging"
@@ -52,14 +81,14 @@ RAW_TABLE_NAME      = "canada_products"
 STAGING_TABLE_NAME  = "source_transformed"
 REJECTED_TABLE_NAME = "source_rejected"
 
-# --- Clés S3 (préfixées par dag_id pour isoler les fichiers dans le bucket) ---
+# Clés S3 préfixées par dag_id pour isoler les fichiers dans le bucket
 RAW_FILE_KEY         = f"{DAG_ID}/data.parquet"
 FILTERED_FILE_KEY    = f"{DAG_ID}/data_filtered.parquet"
 VALID_FILE_KEY       = f"{DAG_ID}/data_valid.parquet"
 INVALID_FILE_KEY     = f"{DAG_ID}/data_invalid.parquet"
 TRANSFORMED_FILE_KEY = f"{DAG_ID}/data_transformed.parquet"
 
-# --- Colonnes à conserver lors du filtrage ---
+# Colonnes à conserver lors du filtrage
 FILTER_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
