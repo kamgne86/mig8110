@@ -89,8 +89,8 @@ class TestFilterDelta:
             assert "environmental_score_grade" not in result_df.columns
             assert list(result_df["ecoscore_grade"]) == ["a", "b"]
 
-    def test_missing_column_is_skipped(self, mock_env_vars):
-        """Columns absent from the file (no fallback either) are silently skipped."""
+    def test_missing_column_filled_with_none(self, mock_env_vars):
+        """Columns absent from the file (no fallback either) are included with None values."""
         with patch("commands.filter_delta.S3FileHandler") as mock_s3_cls:
             mock_s3 = Mock()
             mock_s3_cls.return_value = mock_s3
@@ -99,7 +99,9 @@ class TestFilterDelta:
             handle("delta/raw.parquet", "delta/filtered.parquet", "code,nonexistent_column")
 
             result_df = mock_s3.upload_dataframe.call_args[0][0]
-            assert list(result_df.columns) == ["code"]
+            assert "code" in result_df.columns
+            assert "nonexistent_column" in result_df.columns
+            assert result_df["nonexistent_column"].isna().all()
 
     def test_missing_env_var(self):
         """KeyError is raised when S3 environment variables are missing."""

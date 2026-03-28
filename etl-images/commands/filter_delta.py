@@ -57,14 +57,15 @@ def handle(input_file_key, output_file_key, columns):
 
     resolved = _resolve_columns(df, column_specs)
 
-    # Build output DataFrame: rename fallback columns, skip missing ones
+    # Build output DataFrame: rename fallback columns, fill missing ones with None
     result = pd.DataFrame()
     for spec in column_specs:
         target = spec.split("|")[0].strip()
         if target in resolved:
             result[target] = df[resolved[target]]
         else:
-            logger.warning(f"Column '{target}' not found in {input_file_key}, skipped.")
+            logger.warning(f"Column '{target}' not found in {input_file_key}, filling with None.")
+            result[target] = None
 
     s3_handler.upload_dataframe(result, output_file_key)
 
