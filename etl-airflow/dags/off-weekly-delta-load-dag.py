@@ -2,34 +2,32 @@
 DAG : off_weekly_delta_load
 ===========================
 Chargement incrémental hebdomadaire des produits alimentaires canadiens depuis Open Food Facts.
-Ce DAG est déclenché automatiquement chaque semaine et traite uniquement les fichiers delta
-publiés depuis la dernière exécution (checkpoint). Il met à jour la table staging.source_transformed
-en remplaçant les produits modifiés et en insérant les nouveaux.
 
 Logique de checkpoint :
-    - La liste complète des fichiers delta est persistée dans la Variable Airflow `delta_file_list`.
-    - Le dernier fichier traité est persisté dans `delta_last_processed_file`.
-    - À chaque run, seuls les fichiers postérieurs au checkpoint sont traités.
-    - Toutes les décisions (branching, checkpoint) sont prises au runtime après que
-      `save_delta_file_list` a mis à jour les Variables — jamais au parse-time.
-    - Le BranchPythonOperator `check_new_files` décide au moment de l'exécution :
-        * s'il y a de nouveaux fichiers → branche vers `process_delta_files` (tâches en vert)
-        * sinon                         → branche directement vers `end` (tâches en rose/skipped)
-    - Le checkpoint est mis à jour en fin de run uniquement si des fichiers ont été traités.
+    - `delta_file_list`           : liste complète des fichiers delta (Variable Airflow)
+    - `delta_last_processed_file` : dernier fichier traité (Variable Airflow)
 
-Premier run (Variables absentes) :
-    Le TaskGroup est généré au parse-time depuis `delta_file_list`. Si la Variable est absente,
-    le TaskGroup est vide mais `check_new_files` branche quand même vers `process_delta_files`
-    dès que `save_delta_file_list` l'a remplie — car la décision est prise au runtime.
-    Le TaskGroup vide ne pose pas de problème : Airflow re-parse le DAG (30s–2min) et les
-    tâches apparaissent au run suivant. En production (@weekly), ce n'est pas un problème.
+    Cas 1 — 1ère exécution (Variables vides) :
+        pending = toute la liste → process_delta_file se map sur tous les fichiers
 
-Pipeline (par fichier delta) :
-    extract_delta    : Télécharge le fichier .json.gz en chunks, filtre par pays, uploade en parquet (Bronze)
-    filter_delta     : Sélectionne les colonnes utiles avec fallback pour les champs renommés
-    validate_data    : Sépare les enregistrements valides des invalides selon les règles définies
-    transform_delta  : Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
-    load_delta       : Upsert dans MotherDuck (off.staging.source_transformed) — DELETE + INSERT sur code
+    Cas 2 — Exécutions suivantes, nouveaux fichiers détectés :
+        pending = fichiers postérieurs au checkpoint → process_delta_file se map sur le delta
+
+    Cas 3 — Aucun nouveau fichier :
+        pending = [] → check_new_files branche directement vers end (skipped)
+
+Architecture — Dynamic Task Mapping (Airflow 2.3+) :
+    Remplace le TaskGroup dynamique (génération parse-time) par expand() (génération runtime).
+    Une task instance par fichier, créée au moment de l'exécution à partir du XCom.
+    concurrency=1 garantit le traitement séquentiel (1 fichier à la fois).
+
+    NOTE : process_delta_file utilise une tâche fictive (PythonOperator)
+           pour simuler le pipeline ETL sans Kubernetes.
+           TODO : remplacer par les vrais CustomKubernetesPodOperator une fois le circuit validé.
+
+Pipeline simulé (par fichier delta, 1 task instance par fichier) :
+    extract_delta    → filter_delta → validate_data → transform_delta → load_delta
+    (simulés par des print() dans process_delta_file)
 
 Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
     {stem}.parquet             : Enregistrements bruts filtrés par pays (Bronze)
@@ -46,9 +44,10 @@ import datetime
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator, BranchPythonOperator
+from airflow.decorators import task
+from airflow.models.xcom_arg import XComArg
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
-# Image Docker contenant toutes les commandes ETL
 IMAGE  = "mig8110/etl-images:1.0.0"
 DAG_ID = "off_weekly_delta_load"
 
@@ -57,7 +56,7 @@ args = {
     'start_date': datetime.datetime(2026, 1, 1),
     'email_on_failure': True,
     'retries': 1,
-    'retry_delay': datetime.timedelta(minutes=60)
+    'retry_delay': datetime.timedelta(minutes=60),
 }
 
 dag = DAG(
@@ -67,7 +66,7 @@ dag = DAG(
     concurrency=1,
     schedule_interval='@weekly',
     catchup=False,
-    tags=['mig8110', 'off', 'delta']
+    tags=['mig8110', 'off', 'delta'],
 )
 
 # Connexions
@@ -77,32 +76,24 @@ s3_env_vars = {
     "S3_SECRET_KEY": "{{ conn.s3_conn.password }}",
     "S3_BUCKET":     "{{ conn.s3_conn.schema }}",
 }
-
 duckdb_env_vars = {
     "DUCKDB_TOKEN": "{{ conn.duckdb_default.password }}",
     "DUCKDB_DB":    "{{ conn.duckdb_default.schema }}",
 }
-
 airflow_env_vars = {
     "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
 }
 
-# Base de données
 DATABASE_NAME  = "off"
 STAGING_SCHEMA = "staging"
 STAGING_TABLE  = "source_transformed"
 
-# Variables Airflow pour la gestion du checkpoint inter-runs
 AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
 
-# URL du répertoire delta Open Food Facts
 DELTA_INDEX_URL = "https://static.openfoodfacts.org/data/delta/index.txt"
 DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
 
-# Colonnes à conserver lors du filtrage delta.
-# La syntaxe pipe (target|fallback) gère les champs renommés entre versions de fichiers delta :
-# si la colonne cible est absente, la colonne de secours est utilisée et renommée.
 FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
@@ -114,25 +105,20 @@ FILTER_DELTA_COLUMNS = ",".join([
 
 
 def _pending_files(all_files, last_file):
-    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs au checkpoint."""
+    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs."""
     return [f for f in all_files if f > last_file] if last_file else all_files
 
-
-# Génération du TaskGroup au parse-time : seuls les fichiers pending sont générés,
-# pour que toutes les tâches du groupe correspondent exactement aux fichiers à traiter.
-_all_files          = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
-_last_processed     = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
-files_for_taskgroup = _pending_files(_all_files, _last_processed)
 
 with dag:
 
     start = EmptyOperator(task_id='start')
 
+    # ── 1. Fetch ─────────────────────────────────────────────────────────────
     # Lit index.txt depuis Open Food Facts, trie les fichiers chronologiquement
-    # et écrit la liste dans XCom pour la tâche suivante
+    # et pousse la liste dans XCom via do_xcom_push=True
     fetch_delta_index = CustomKubernetesPodOperator(
         dag=dag,
-        name='fetch-delta-index',
+        name='fetch_delta_index',
         image=IMAGE,
         arguments=[
             "--command", "fetch_delta_index",
@@ -141,11 +127,21 @@ with dag:
         do_xcom_push=True,
     )
 
-    # Persiste la liste des fichiers delta dans une Variable Airflow
-    # pour qu'elle soit disponible au prochain parse du DAG
-    def _save_delta_file_list(ti):
-        filenames = ti.xcom_pull(task_ids='fetch-delta-index')
-        Variable.set(AIRFLOW_VAR_DELTA_FILE_LIST, filenames, serialize_json=True)
+    # ── 2. Save + calcul des pending ─────────────────────────────────────────
+    # Persiste la liste complète dans la Variable ET retourne les pending via XCom.
+    #
+    # cas 1 — Variables vides   : last_file=None  → pending = toute la liste
+    # cas 2 — Nouveaux fichiers  : last_file=X     → pending = fichiers > X
+    # cas 3 — Rien de nouveau    : last_file=X     → pending = []
+    def _save_delta_file_list(ti) -> list:
+        all_files = ti.xcom_pull(task_ids='fetch_delta_index') or []
+        last_file = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+
+        Variable.set(AIRFLOW_VAR_DELTA_FILE_LIST, all_files, serialize_json=True)
+
+        pending = _pending_files(all_files, last_file)
+        print(f"[save_delta_file_list] total={len(all_files)} | last='{last_file}' | pending={len(pending)}")
+        return pending      # ← alimentera expand() via XComArg
 
     save_delta_file_list = PythonOperator(
         task_id='save_delta_file_list',
@@ -153,15 +149,14 @@ with dag:
         dag=dag,
     )
 
-    # Compare la liste des fichiers delta avec le checkpoint au runtime (après save_delta_file_list).
-    # Branche vers `process_delta_files` s'il y a de nouveaux fichiers (tâches en vert),
-    # ou directement vers `end` si tout est déjà à jour (tâches en rose/skipped).
-    def _check_new_files():
-        current_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
-        current_last  = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
-        if _pending_files(current_files, current_last):
-            return 'process_delta_files'
-        return 'end'
+    # ── 3. Branchement ───────────────────────────────────────────────────────
+    # Lit le XCom `return_value` de save_delta_file_list (la liste pending).
+    # cas 1 & 2 → process_delta_file
+    # cas 3     → end (skipped)
+    def _check_new_files(ti):
+        pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
+        print(f"[check_new_files] {len(pending)} fichier(s) en attente")
+        return 'process_delta_file' if pending else 'end'
 
     check_new_files = BranchPythonOperator(
         task_id='check_new_files',
@@ -169,18 +164,65 @@ with dag:
         dag=dag,
     )
 
-    # TODO: remplacer par le TaskGroup avec les vrais CustomKubernetesPodOperator
-    #       une fois le circuit (branching, skip, checkpoint) validé.
-    process_group = EmptyOperator(task_id='process_delta_files', dag=dag)
+    # ── 4. Traitement dynamique (SIMULÉ) — 1 task instance par fichier ───────
+    # expand() crée les instances AU RUNTIME depuis le XCom de save_delta_file_list.
+    #
+    # TODO : remplacer le corps de la fonction par les vrais appels :
+    #
+    #   extract_delta = CustomKubernetesPodOperator(
+    #       name=f'extract-delta-{stem}', image=IMAGE,
+    #       arguments=["--command", "extract_delta", "--file", stem, "--country", "canada"],
+    #       env_vars={**s3_env_vars, **airflow_env_vars},
+    #   )
+    #   extract_delta.execute(context=context)
+    #
+    #   filter_delta = CustomKubernetesPodOperator(
+    #       name=f'filter-delta-{stem}', image=IMAGE,
+    #       arguments=["--command", "filter_delta", "--file", stem, "--columns", FILTER_DELTA_COLUMNS],
+    #       env_vars={**s3_env_vars},
+    #   )
+    #   filter_delta.execute(context=context)
+    #
+    #   validate_data = CustomKubernetesPodOperator(
+    #       name=f'validate-data-{stem}', image=IMAGE,
+    #       arguments=["--command", "validate_data", "--file", stem],
+    #       env_vars={**s3_env_vars},
+    #   )
+    #   validate_data.execute(context=context)
+    #
+    #   transform_delta = CustomKubernetesPodOperator(
+    #       name=f'transform-delta-{stem}', image=IMAGE,
+    #       arguments=["--command", "transform_delta", "--file", stem],
+    #       env_vars={**s3_env_vars},
+    #   )
+    #   transform_delta.execute(context=context)
+    #
+    #   load_delta = CustomKubernetesPodOperator(
+    #       name=f'load-delta-{stem}', image=IMAGE,
+    #       arguments=["--command", "load_delta", "--file", stem,
+    #                  "--db", DATABASE_NAME, "--schema", STAGING_SCHEMA, "--table", STAGING_TABLE],
+    #       env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
+    #   )
+    #   load_delta.execute(context=context)
+    @task(task_id='process_delta_file', dag=dag)
+    def process_delta_file(stem: str):
+        steps = ["extract_delta", "filter_delta", "validate_data", "transform_delta", "load_delta"]
+        print(f"[process_delta_file] ── début : {stem} ──")
+        for step in steps:
+            print(f"  → [SIMULATION] {step} ({stem})")
+        print(f"[process_delta_file] ── terminé : {stem} ──")
 
-    # Met à jour le checkpoint avec le dernier fichier traité dans ce run.
-    # Lit les Variables au runtime pour refléter l'état après save_delta_file_list.
-    def _update_checkpoint():
-        current_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
-        current_last  = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
-        pending = _pending_files(current_files, current_last)
+    process_mapped = process_delta_file.expand(
+        stem=XComArg(save_delta_file_list)
+    )
+
+    # ── 5. Checkpoint ────────────────────────────────────────────────────────
+    # Persiste le dernier fichier traité pour le prochain run.
+    def _update_checkpoint(ti):
+        pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
         if pending:
             Variable.set(AIRFLOW_VAR_LAST_PROCESSED_FILE, pending[-1])
+            print(f"[update_checkpoint] checkpoint → '{pending[-1]}'")
 
     update_checkpoint = PythonOperator(
         task_id='update_checkpoint',
@@ -188,14 +230,15 @@ with dag:
         dag=dag,
     )
 
-    # trigger_rule ALL_DONE : end s'exécute quelle que soit la branche prise
-    # (process_delta_files → update_checkpoint en vert, ou skip direct via check_new_files en rose)
+    # ── 6. Fin ───────────────────────────────────────────────────────────────
+    # all_done : s'exécute quelle que soit la branche (process ou skip direct)
     end = EmptyOperator(
         task_id='end',
         trigger_rule='all_done',
         dag=dag,
     )
 
+    # ── Dépendances ──────────────────────────────────────────────────────────
     start >> fetch_delta_index >> save_delta_file_list >> check_new_files
-    check_new_files >> process_group >> update_checkpoint >> end
+    check_new_files >> process_mapped >> update_checkpoint >> end
     check_new_files >> end
