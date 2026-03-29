@@ -104,12 +104,16 @@ FILTER_DELTA_COLUMNS = ",".join([
     "nutriscore_score", "nutriscore_grade", "nutriments",
 ])
 
-# Calcul des fichiers à traiter au parse-time du DAG :
+def _pending_files(all_files, last_file):
+    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs au checkpoint."""
+    return [f for f in all_files if f > last_file] if last_file else all_files
+
+# Calcul des fichiers à traiter au parse-time du DAG (nécessaire pour générer le TaskGroup) :
 # - Premier run (checkpoint absent) : tous les fichiers de la liste
 # - Runs suivants : uniquement les fichiers postérieurs au checkpoint (tri lexicographique = chronologique)
 all_delta_files  = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
 last_processed   = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
-files_to_process = [f for f in all_delta_files if f > last_processed] if last_processed else all_delta_files
+files_to_process = _pending_files(all_delta_files, last_processed)
 
 with dag:
 
@@ -143,8 +147,12 @@ with dag:
     # Compare la liste des fichiers delta avec le checkpoint.
     # Branche vers `process_delta_files` s'il y a de nouveaux fichiers à traiter,
     # ou directement vers `end` si tout est déjà à jour — visible dans l'UI Airflow.
+    # NOTE: Les Variables sont lues au runtime (pas au parse-time) pour refléter
+    # la liste fraîchement sauvegardée par save_delta_file_list dans ce même run.
     def _check_new_files():
-        if files_to_process:
+        current_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
+        current_last  = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+        if _pending_files(current_files, current_last):
             return 'process_delta_files'
         return 'end'
 
