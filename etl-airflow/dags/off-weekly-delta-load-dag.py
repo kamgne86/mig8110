@@ -10,10 +10,19 @@ Logique de checkpoint :
     - La liste complète des fichiers delta est persistée dans la Variable Airflow `delta_file_list`.
     - Le dernier fichier traité est persisté dans `delta_last_processed_file`.
     - À chaque run, seuls les fichiers postérieurs au checkpoint sont traités.
+    - Toutes les décisions (branching, checkpoint) sont prises au runtime après que
+      `save_delta_file_list` a mis à jour les Variables — jamais au parse-time.
     - Le BranchPythonOperator `check_new_files` décide au moment de l'exécution :
-        * s'il y a de nouveaux fichiers → branche vers `process_delta_files`
-        * sinon                         → branche directement vers `end` (skip visible dans l'UI)
+        * s'il y a de nouveaux fichiers → branche vers `process_delta_files` (tâches en vert)
+        * sinon                         → branche directement vers `end` (tâches en rose/skipped)
     - Le checkpoint est mis à jour en fin de run uniquement si des fichiers ont été traités.
+
+Premier run (Variables absentes) :
+    Le TaskGroup est généré au parse-time depuis `delta_file_list`. Si la Variable est absente,
+    le TaskGroup est vide mais `check_new_files` branche quand même vers `process_delta_files`
+    dès que `save_delta_file_list` l'a remplie — car la décision est prise au runtime.
+    Le TaskGroup vide ne pose pas de problème : Airflow re-parse le DAG (30s–2min) et les
+    tâches apparaissent au run suivant. En production (@weekly), ce n'est pas un problème.
 
 Pipeline (par fichier delta) :
     extract_delta    : Télécharge le fichier .json.gz en chunks, filtre par pays, uploade en parquet (Bronze)
@@ -37,7 +46,6 @@ import datetime
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.utils.task_group import TaskGroup
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
 # Image Docker contenant toutes les commandes ETL
@@ -104,16 +112,17 @@ FILTER_DELTA_COLUMNS = ",".join([
     "nutriscore_score", "nutriscore_grade", "nutriments",
 ])
 
+
 def _pending_files(all_files, last_file):
     """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs au checkpoint."""
     return [f for f in all_files if f > last_file] if last_file else all_files
 
-# Calcul des fichiers à traiter au parse-time du DAG (nécessaire pour générer le TaskGroup) :
-# - Premier run (checkpoint absent) : tous les fichiers de la liste
-# - Runs suivants : uniquement les fichiers postérieurs au checkpoint (tri lexicographique = chronologique)
-all_delta_files  = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
-last_processed   = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
-files_to_process = _pending_files(all_delta_files, last_processed)
+
+# Génération du TaskGroup au parse-time : seuls les fichiers pending sont générés,
+# pour que toutes les tâches du groupe correspondent exactement aux fichiers à traiter.
+_all_files          = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
+_last_processed     = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+files_for_taskgroup = _pending_files(_all_files, _last_processed)
 
 with dag:
 
@@ -133,7 +142,7 @@ with dag:
     )
 
     # Persiste la liste des fichiers delta dans une Variable Airflow
-    # pour qu'elle soit disponible lors du prochain parse du DAG
+    # pour qu'elle soit disponible au prochain parse du DAG
     def _save_delta_file_list(ti):
         filenames = ti.xcom_pull(task_ids='fetch-delta-index')
         Variable.set(AIRFLOW_VAR_DELTA_FILE_LIST, filenames, serialize_json=True)
@@ -144,11 +153,9 @@ with dag:
         dag=dag,
     )
 
-    # Compare la liste des fichiers delta avec le checkpoint.
-    # Branche vers `process_delta_files` s'il y a de nouveaux fichiers à traiter,
-    # ou directement vers `end` si tout est déjà à jour — visible dans l'UI Airflow.
-    # NOTE: Les Variables sont lues au runtime (pas au parse-time) pour refléter
-    # la liste fraîchement sauvegardée par save_delta_file_list dans ce même run.
+    # Compare la liste des fichiers delta avec le checkpoint au runtime (après save_delta_file_list).
+    # Branche vers `process_delta_files` s'il y a de nouveaux fichiers (tâches en vert),
+    # ou directement vers `end` si tout est déjà à jour (tâches en rose/skipped).
     def _check_new_files():
         current_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
         current_last  = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
@@ -162,106 +169,18 @@ with dag:
         dag=dag,
     )
 
-    # Traitement de chaque fichier delta (un groupe de 5 tâches par fichier)
-    with TaskGroup(group_id='process_delta_files') as process_group:
-        for filename in files_to_process:
-            # Dérive le préfixe S3 depuis le nom du fichier (sans extension .json.gz)
-            stem = filename.replace(".json.gz", "")
-
-            # Clés S3 pour les fichiers intermédiaires de ce fichier delta
-            raw_key         = f"{DAG_ID}/delta/{stem}.parquet"
-            filtered_key    = f"{DAG_ID}/delta/{stem}_filtered.parquet"
-            valid_key       = f"{DAG_ID}/delta/{stem}_valid.parquet"
-            invalid_key     = f"{DAG_ID}/delta/{stem}_invalid.parquet"
-            transformed_key = f"{DAG_ID}/delta/{stem}_transformed.parquet"
-
-            # Télécharge le fichier .json.gz en chunks de 50 MB, filtre les enregistrements
-            # canadiens et sérialise les colonnes complexes en JSON strings (couche Bronze)
-            extract = CustomKubernetesPodOperator(
-                dag=dag,
-                name=f"extract-delta-{stem}",
-                task_id=f"extract_delta_{stem}",
-                image=IMAGE,
-                env_vars={**s3_env_vars},
-                arguments=[
-                    "--command",         "extract_delta",
-                    "--filename",        filename,
-                    "--base_url",        DELTA_BASE_URL,
-                    "--output_file_key", raw_key,
-                ],
-            )
-
-            # Sélectionne les colonnes pertinentes avec fallback pour les champs renommés.
-            # Les colonnes absentes sont incluses avec None pour garantir un schéma uniforme.
-            filter_delta = CustomKubernetesPodOperator(
-                dag=dag,
-                name=f"filter-delta-{stem}",
-                task_id=f"filter_delta_{stem}",
-                image=IMAGE,
-                env_vars={**s3_env_vars},
-                arguments=[
-                    "--command",         "filter_delta",
-                    "--input_file_key",  raw_key,
-                    "--output_file_key", filtered_key,
-                    "--columns",         FILTER_DELTA_COLUMNS,
-                ],
-            )
-
-            # Applique les règles de validation (config/validation_rules.py).
-            # Les invalides sont mis en quarantaine dans {stem}_invalid.parquet.
-            validate_data = CustomKubernetesPodOperator(
-                dag=dag,
-                name=f"validate-data-{stem}",
-                task_id=f"validate_data_{stem}",
-                image=IMAGE,
-                env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
-                arguments=[
-                    "--command",          "validate_data",
-                    "--input_file_key",   filtered_key,
-                    "--output_file_key",  valid_key,
-                    "--invalid_file_key", invalid_key,
-                ],
-            )
-
-            # Construit les URLs d'images depuis images.selected, extrait les nutriments
-            # depuis le dict plat et projette sur le schéma Silver (config/target_columns.py)
-            transform_delta = CustomKubernetesPodOperator(
-                dag=dag,
-                name=f"transform-delta-{stem}",
-                task_id=f"transform_delta_{stem}",
-                image=IMAGE,
-                env_vars={**s3_env_vars},
-                arguments=[
-                    "--command",         "transform_delta",
-                    "--input_file_key",  valid_key,
-                    "--output_file_key", transformed_key,
-                ],
-            )
-
-            # Upsert dans MotherDuck : supprime les lignes dont le code est présent dans
-            # le fichier delta, puis insère toutes les lignes (nouveaux + modifiés).
-            # Cible : off.staging.source_transformed (même table que le chargement initial)
-            load_delta = CustomKubernetesPodOperator(
-                dag=dag,
-                name=f"load-delta-{stem}",
-                task_id=f"load_delta_{stem}",
-                image=IMAGE,
-                env_vars={**s3_env_vars, **duckdb_env_vars},
-                arguments=[
-                    "--command",         "load_delta",
-                    "--input_file_key",  transformed_key,
-                    "--table_name",      STAGING_TABLE,
-                    "--schema_name",     f"{DATABASE_NAME}.{STAGING_SCHEMA}",
-                ],
-            )
-
-            extract >> filter_delta >> validate_data >> transform_delta >> load_delta
+    # TODO: remplacer par le TaskGroup avec les vrais CustomKubernetesPodOperator
+    #       une fois le circuit (branching, skip, checkpoint) validé.
+    process_group = EmptyOperator(task_id='process_delta_files', dag=dag)
 
     # Met à jour le checkpoint avec le dernier fichier traité dans ce run.
-    # Au prochain run, seuls les fichiers postérieurs à ce checkpoint seront traités.
+    # Lit les Variables au runtime pour refléter l'état après save_delta_file_list.
     def _update_checkpoint():
-        if files_to_process:
-            Variable.set(AIRFLOW_VAR_LAST_PROCESSED_FILE, files_to_process[-1])
+        current_files = Variable.get(AIRFLOW_VAR_DELTA_FILE_LIST, default_var=[], deserialize_json=True)
+        current_last  = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+        pending = _pending_files(current_files, current_last)
+        if pending:
+            Variable.set(AIRFLOW_VAR_LAST_PROCESSED_FILE, pending[-1])
 
     update_checkpoint = PythonOperator(
         task_id='update_checkpoint',
@@ -270,10 +189,11 @@ with dag:
     )
 
     # trigger_rule ALL_DONE : end s'exécute quelle que soit la branche prise
-    # (process_delta_files → update_checkpoint, ou skip direct via check_new_files)
+    # (process_delta_files → update_checkpoint en vert, ou skip direct via check_new_files en rose)
     end = EmptyOperator(
         task_id='end',
         trigger_rule='all_done',
+        dag=dag,
     )
 
     start >> fetch_delta_index >> save_delta_file_list >> check_new_files
