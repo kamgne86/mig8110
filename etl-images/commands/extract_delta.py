@@ -92,7 +92,7 @@ def handle(filename, output_file_key, base_url, country="canada"):
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else (str(x) if x is not None else None)
+                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else (None if (x is None or (isinstance(x, float) and x != x)) else str(x))
             )
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
