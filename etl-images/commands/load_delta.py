@@ -14,6 +14,13 @@ def handle(input_file_key, table_name, schema_name):
     - Existing rows with matching codes are replaced (updated).
     - New rows are inserted.
 
+    Atomicité :
+        Le DELETE et l'INSERT sont exécutés dans une transaction explicite.
+        Si l'INSERT échoue (ex: incompatibilité de types), le ROLLBACK annule
+        automatiquement le DELETE — la table reste dans son état d'origine.
+        Cela évite la perte de données dans le cas où le DELETE aurait supprimé
+        des enregistrements valides sans pouvoir les réinsérer.
+
     Args:
         input_file_key: S3 key of the transformed parquet to load.
         table_name: Target table name in MotherDuck.
@@ -40,11 +47,20 @@ def handle(input_file_key, table_name, schema_name):
             f"CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} AS "
             f"SELECT * FROM read_parquet('{tmp.name}') WHERE 1=0"
         )
-        con.sql(
-            f"DELETE FROM {schema_name}.{table_name} "
-            f"WHERE code IN (SELECT code FROM read_parquet('{tmp.name}'))"
-        )
-        con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM read_parquet('{tmp.name}')")
+
+        # DELETE + INSERT dans une transaction pour garantir l'atomicité :
+        # si l'INSERT échoue, le DELETE est annulé (ROLLBACK) et la table reste intacte.
+        con.sql("BEGIN TRANSACTION")
+        try:
+            con.sql(
+                f"DELETE FROM {schema_name}.{table_name} "
+                f"WHERE code IN (SELECT code FROM read_parquet('{tmp.name}'))"
+            )
+            con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM read_parquet('{tmp.name}')")
+            con.sql("COMMIT")
+        except Exception:
+            con.sql("ROLLBACK")
+            raise
 
         con.close()
 

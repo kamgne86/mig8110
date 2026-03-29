@@ -20,7 +20,7 @@ class TestLoadDelta:
             yield env_vars
 
     def test_upsert_sql_sequence(self, mock_env_vars):
-        """CREATE TABLE IF NOT EXISTS → DELETE → INSERT are issued in order."""
+        """CREATE TABLE IF NOT EXISTS → BEGIN → DELETE → INSERT → COMMIT are issued in order."""
         with patch("commands.load_delta.S3FileHandler") as mock_s3_cls, \
              patch("commands.load_delta.duckdb.connect") as mock_connect:
 
@@ -33,8 +33,32 @@ class TestLoadDelta:
             sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
             assert any("CREATE SCHEMA IF NOT EXISTS staging" in s for s in sql_calls)
             assert any("CREATE TABLE IF NOT EXISTS staging.source_transformed" in s for s in sql_calls)
+            assert any("BEGIN TRANSACTION" in s for s in sql_calls)
             assert any("DELETE FROM staging.source_transformed" in s for s in sql_calls)
             assert any("INSERT INTO staging.source_transformed" in s for s in sql_calls)
+            assert any("COMMIT" in s for s in sql_calls)
+
+    def test_rollback_on_insert_failure(self, mock_env_vars):
+        """ROLLBACK is called and exception is re-raised if INSERT fails."""
+        with patch("commands.load_delta.S3FileHandler") as mock_s3_cls, \
+             patch("commands.load_delta.duckdb.connect") as mock_connect:
+
+            mock_s3_cls.return_value = Mock()
+            mock_con = Mock()
+            mock_connect.return_value = mock_con
+
+            # Simulate INSERT failure
+            def fail_on_insert(sql):
+                if "INSERT" in sql:
+                    raise Exception("ConversionException: type mismatch")
+            mock_con.sql.side_effect = fail_on_insert
+
+            with pytest.raises(Exception, match="ConversionException"):
+                handle("delta/transformed.parquet", "source_transformed", "staging")
+
+            sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
+            assert any("ROLLBACK" in s for s in sql_calls)
+            assert not any("COMMIT" in s for s in sql_calls)
 
     def test_upsert_order(self, mock_env_vars):
         """DELETE must come before INSERT to avoid removing newly inserted rows."""
