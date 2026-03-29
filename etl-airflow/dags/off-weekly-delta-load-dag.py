@@ -10,7 +10,10 @@ Logique de checkpoint :
     - La liste complète des fichiers delta est persistée dans la Variable Airflow `delta_file_list`.
     - Le dernier fichier traité est persisté dans `delta_last_processed_file`.
     - À chaque run, seuls les fichiers postérieurs au checkpoint sont traités.
-    - Le checkpoint est mis à jour en fin de run.
+    - Le BranchPythonOperator `check_new_files` décide au moment de l'exécution :
+        * s'il y a de nouveaux fichiers → branche vers `process_delta_files`
+        * sinon                         → branche directement vers `end` (skip visible dans l'UI)
+    - Le checkpoint est mis à jour en fin de run uniquement si des fichiers ont été traités.
 
 Pipeline (par fichier delta) :
     extract_delta    : Télécharge le fichier .json.gz en chunks, filtre par pays, uploade en parquet (Bronze)
@@ -33,7 +36,7 @@ Output MotherDuck (base: off) :
 import datetime
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.utils.task_group import TaskGroup
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
@@ -137,7 +140,21 @@ with dag:
         dag=dag,
     )
 
-    # Traitement de chaque fichier delta en parallèle (un TaskGroup par fichier)
+    # Compare la liste des fichiers delta avec le checkpoint.
+    # Branche vers `process_delta_files` s'il y a de nouveaux fichiers à traiter,
+    # ou directement vers `end` si tout est déjà à jour — visible dans l'UI Airflow.
+    def _check_new_files():
+        if files_to_process:
+            return 'process_delta_files'
+        return 'end'
+
+    check_new_files = BranchPythonOperator(
+        task_id='check_new_files',
+        python_callable=_check_new_files,
+        dag=dag,
+    )
+
+    # Traitement de chaque fichier delta (un groupe de 5 tâches par fichier)
     with TaskGroup(group_id='process_delta_files') as process_group:
         for filename in files_to_process:
             # Dérive le préfixe S3 depuis le nom du fichier (sans extension .json.gz)
@@ -159,9 +176,9 @@ with dag:
                 image=IMAGE,
                 env_vars={**s3_env_vars},
                 arguments=[
-                    "--command",        "extract_delta",
-                    "--filename",       filename,
-                    "--base_url",       DELTA_BASE_URL,
+                    "--command",         "extract_delta",
+                    "--filename",        filename,
+                    "--base_url",        DELTA_BASE_URL,
                     "--output_file_key", raw_key,
                 ],
             )
@@ -175,7 +192,7 @@ with dag:
                 image=IMAGE,
                 env_vars={**s3_env_vars},
                 arguments=[
-                    "--command",        "filter_delta",
+                    "--command",         "filter_delta",
                     "--input_file_key",  raw_key,
                     "--output_file_key", filtered_key,
                     "--columns",         FILTER_DELTA_COLUMNS,
@@ -191,7 +208,7 @@ with dag:
                 image=IMAGE,
                 env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
                 arguments=[
-                    "--command",        "validate_data",
+                    "--command",          "validate_data",
                     "--input_file_key",   filtered_key,
                     "--output_file_key",  valid_key,
                     "--invalid_file_key", invalid_key,
@@ -207,7 +224,7 @@ with dag:
                 image=IMAGE,
                 env_vars={**s3_env_vars},
                 arguments=[
-                    "--command",        "transform_delta",
+                    "--command",         "transform_delta",
                     "--input_file_key",  valid_key,
                     "--output_file_key", transformed_key,
                 ],
@@ -223,10 +240,10 @@ with dag:
                 image=IMAGE,
                 env_vars={**s3_env_vars, **duckdb_env_vars},
                 arguments=[
-                    "--command",        "load_delta",
-                    "--input_file_key", transformed_key,
-                    "--table_name",     STAGING_TABLE,
-                    "--schema_name",    f"{DATABASE_NAME}.{STAGING_SCHEMA}",
+                    "--command",         "load_delta",
+                    "--input_file_key",  transformed_key,
+                    "--table_name",      STAGING_TABLE,
+                    "--schema_name",     f"{DATABASE_NAME}.{STAGING_SCHEMA}",
                 ],
             )
 
@@ -244,6 +261,13 @@ with dag:
         dag=dag,
     )
 
-    end = EmptyOperator(task_id='end')
+    # trigger_rule ALL_DONE : end s'exécute quelle que soit la branche prise
+    # (process_delta_files → update_checkpoint, ou skip direct via check_new_files)
+    end = EmptyOperator(
+        task_id='end',
+        trigger_rule='all_done',
+    )
 
-    start >> fetch_delta_index >> save_delta_file_list >> process_group >> update_checkpoint >> end
+    start >> fetch_delta_index >> save_delta_file_list >> check_new_files
+    check_new_files >> process_group >> update_checkpoint >> end
+    check_new_files >> end
