@@ -33,9 +33,9 @@ Pipeline (par fichier delta, 1 task group instance par fichier) :
     filter_delta   : Sélectionne les colonnes utiles avec fallback pour les champs renommés
     validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
     transform_delta: Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
-    load_delta     : Upsert atomique dans MotherDuck (off.staging.source_transformed) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
+    load_delta     : Upsert atomique dans MotherDuck (off.silver.products) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
 
-Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
+Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/bronze/) :
     {stem}.parquet             : Enregistrements bruts filtrés par pays (Bronze)
     {stem}_filtered.parquet    : Colonnes sélectionnées
     {stem}_valid.parquet       : Enregistrements valides
@@ -43,12 +43,12 @@ Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
     {stem}_transformed.parquet : Enregistrements transformés prêts pour le chargement
 
 Output MotherDuck (base: off) :
-    staging.source_transformed : Table cible principale — upsert sur `code`
-    monitoring.pipeline_runs   : Métriques d'exécution (records_in, records_out, rejection_rate)
+    silver.products           : Table cible principale — upsert sur `code`
+    monitoring.pipeline_runs  : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 
 import re
-import datetime
+import pendulum
 from airflow.decorators import task_group
 from airflow.models import DAG, Variable
 from airflow.models.xcom_arg import XComArg
@@ -61,10 +61,10 @@ DAG_ID = "off_weekly_delta_load"
 
 args = {
     'owner': 'airflow',
-    'start_date': datetime.datetime(2026, 1, 1),
+    'start_date': pendulum.datetime(2026, 1, 1, tz="America/Montreal"),
     'email_on_failure': True,
     'retries': 1,
-    'retry_delay': datetime.timedelta(minutes=60),
+    'retry_delay': pendulum.duration(minutes=60),
 }
 
 dag = DAG(
@@ -93,8 +93,8 @@ airflow_env_vars = {
 }
 
 DATABASE_NAME  = "off"
-STAGING_SCHEMA = "staging"
-STAGING_TABLE  = "source_transformed"
+SILVER_SCHEMA  = "silver"
+SILVER_TABLE   = "products"
 
 AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
@@ -108,16 +108,9 @@ DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
 FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
-    "ecoscore_score|environmental_score_score",
-    "ecoscore_grade|environmental_score_grade",
-    "images", "ingredients_tags",
-    "nutriscore_score", "nutriscore_grade", "nutriments",
+    "ecoscore_score|environmental_score_score", "ecoscore_grade|environmental_score_grade",
+    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutriments",
 ])
-
-
-def _pending_files(all_files, last_file):
-    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs."""
-    return [f for f in all_files if f > last_file] if last_file else all_files
 
 
 with dag:
@@ -140,6 +133,10 @@ with dag:
     )
 
     # ── 2. Save + calcul des pending ─────────────────────────────────────────
+    # Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs.
+    def _pending_files(all_files, last_file):
+        return [f for f in all_files if f > last_file] if last_file else all_files
+
     # Persiste la liste complète dans la Variable Airflow ET retourne les fichiers
     # pending via XCom pour alimenter build_file_params à l'étape suivante.
     #
@@ -198,11 +195,11 @@ with dag:
                 'validate_name':  f'validate-data-{ps}',
                 'transform_name': f'transform-delta-{ps}',
                 'load_name':      f'load-delta-{ps}',
-                'raw_key':        f'{DAG_ID}/delta/{sk}.parquet',
-                'filtered_key':   f'{DAG_ID}/delta/{sk}_filtered.parquet',
-                'valid_key':      f'{DAG_ID}/delta/{sk}_valid.parquet',
-                'invalid_key':    f'{DAG_ID}/delta/{sk}_invalid.parquet',
-                'transformed_key':f'{DAG_ID}/delta/{sk}_transformed.parquet',
+                'raw_key':        f'{DAG_ID}/bronze/{sk}.parquet',
+                'filtered_key':   f'{DAG_ID}/bronze/{sk}_filtered.parquet',
+                'valid_key':      f'{DAG_ID}/bronze/{sk}_valid.parquet',
+                'invalid_key':    f'{DAG_ID}/bronze/{sk}_invalid.parquet',
+                'transformed_key':f'{DAG_ID}/bronze/{sk}_transformed.parquet',
             })
         return result
 
@@ -305,8 +302,8 @@ with dag:
             arguments=[
                 "--command",         "load_delta",
                 "--input_file_key",  transformed_key,
-                "--table_name",      STAGING_TABLE,
-                "--schema_name",     f"{DATABASE_NAME}.{STAGING_SCHEMA}",
+                "--table_name",      SILVER_TABLE,
+                "--schema_name",     f"{DATABASE_NAME}.{SILVER_SCHEMA}",
             ],
             env_vars={**s3_env_vars, **duckdb_env_vars},
             do_xcom_push=False,
