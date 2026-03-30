@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import pandas as pd
 from io import BytesIO
@@ -57,6 +58,23 @@ def _extract_image_url(images, code, selected_key, image_file_key):
         return None
 
 
+def _parse_json(value):
+    """Parse a JSON string back to a Python object.
+
+    Columns serialized in extract_delta (lists, dicts → JSON strings) must be
+    parsed back before transformations and before writing to parquet, so that
+    the output schema matches the target table (e.g. VARCHAR[] for tag columns).
+    """
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return value
+
+
 def _extract_nutriment(nutriments, nutriment_name):
     """Extrait une valeur nutritionnelle depuis le dict plat du format delta."""
     if nutriments is None:
@@ -84,6 +102,14 @@ def handle(input_file_key, output_file_key):
         df = pd.read_parquet(raw)
 
     # T2 — Transformations (format delta)
+
+    # Les colonnes complexes (listes, dicts) ont été sérialisées en JSON strings dans extract_delta.
+    # On les parse ici avant les transformations pour restaurer les types attendus :
+    # - images, nutriments : dicts nécessaires pour l'extraction
+    # - categories_tags, countries_tags, ingredients_tags : listes → VARCHAR[] dans MotherDuck
+    for col in ['images', 'nutriments', 'categories_tags', 'countries_tags', 'ingredients_tags']:
+        if col in df.columns:
+            df[col] = df[col].apply(_parse_json)
 
     # product_name: déjà un VARCHAR dans le delta, aucune extraction nécessaire
 

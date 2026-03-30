@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'filter_data', 'validate_data', 'transform_data', 'load_data', 'extract_delta', 'load_delta', 'transform_delta', 'merge_data']),
+    type=click.Choice(['extract_data', 'filter_data', 'validate_data', 'transform_data', 'load_data', 'fetch_delta_index', 'extract_delta', 'filter_delta', 'load_delta', 'transform_delta', 'merge_data']),
     help='Command to execute'
 )
 
@@ -37,11 +37,18 @@ schema_name = click.option(
     help='DuckDB schema name'
 )
 
-num_files = click.option(
-    '--num_files',
-    type=int,
+filename = click.option(
+    '--filename',
+    type=str,
     default=None,
-    help='Number of most recent delta files to process (default: all)'
+    help='Delta filename to process (e.g. openfoodfacts_products_xxx.json.gz)'
+)
+
+base_url = click.option(
+    '--base_url',
+    type=str,
+    default=None,
+    help='Base URL of the delta directory (e.g. https://static.openfoodfacts.org/data/delta/)'
 )
 
 invalid_file_key = click.option(
@@ -55,13 +62,6 @@ country = click.option(
     type=str,
     default='canada',
     help='Country to filter delta records on (substring match against countries_tags, default: canada)'
-)
-
-last_processed_file = click.option(
-    '--last_processed_file',
-    type=str,
-    default=None,
-    help='Filename of the last successfully processed delta file (Airflow Variable). Only files after this one will be processed.'
 )
 
 columns = click.option(
