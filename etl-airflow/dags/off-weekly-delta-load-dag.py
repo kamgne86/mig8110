@@ -8,27 +8,34 @@ Logique de checkpoint :
     - `delta_last_processed_file` : dernier fichier traité (Variable Airflow)
 
     Cas 1 — 1ère exécution (Variables vides) :
-        pending = toute la liste → process_delta_file se map sur tous les fichiers
+        pending = toute la liste → pipeline_per_file se map sur tous les fichiers
 
     Cas 2 — Exécutions suivantes, nouveaux fichiers détectés :
-        pending = fichiers postérieurs au checkpoint → process_delta_file se map sur le delta
+        pending = fichiers postérieurs au checkpoint → pipeline_per_file se map sur le delta
 
     Cas 3 — Aucun nouveau fichier :
         pending = [] → check_new_files branche directement vers end (tâches en rose/skipped)
 
-Architecture — Dynamic Task Mapping (Airflow 2.3+) :
-    Remplace le TaskGroup dynamique (génération parse-time) par expand() (génération runtime).
-    Une task instance par fichier, créée au moment de l'exécution à partir du XCom.
+Architecture — Mapped Task Groups (Airflow 2.5+) :
+    Combine @task_group et expand_kwargs() pour créer un groupe de tâches par fichier delta
+    au runtime. Chaque groupe contient 5 tâches ETL avec des logs séparés dans l'UI Airflow
+    (contrairement à @task + expand() où tous les logs sont concaténés dans une seule instance).
     concurrency=1 garantit le traitement séquentiel (1 fichier à la fois).
 
-Pipeline (par fichier delta, 1 task instance par fichier) :
+    Le corps d'un @task_group s'exécute au parse-time pour définir la structure du DAG —
+    les arguments reçus sont des MappedArgument impossibles à transformer avec du code Python.
+    Solution : build_file_params (PythonOperator) pré-calcule toutes les chaînes dérivées
+    (clés S3, noms de pods) et retourne une liste de dicts plats. expand_kwargs() distribue
+    ensuite chaque dict comme ensemble de paramètres nommés à une instance du groupe.
+
+Pipeline (par fichier delta, 1 task group instance par fichier) :
     extract_delta  : Télécharge le fichier .json.gz, filtre par pays, uploade en parquet (Bronze)
     filter_delta   : Sélectionne les colonnes utiles avec fallback pour les champs renommés
     validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
     transform_delta: Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
-    load_delta     : Upsert atomique dans MotherDuck (off.staging.source_transformed) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
+    load_delta     : Upsert atomique dans MotherDuck (off.silver.products) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
 
-Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
+Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/bronze/) :
     {stem}.parquet             : Enregistrements bruts filtrés par pays (Bronze)
     {stem}_filtered.parquet    : Colonnes sélectionnées
     {stem}_valid.parquet       : Enregistrements valides
@@ -36,14 +43,13 @@ Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
     {stem}_transformed.parquet : Enregistrements transformés prêts pour le chargement
 
 Output MotherDuck (base: off) :
-    staging.source_transformed : Table cible principale — upsert sur `code`
-    monitoring.pipeline_runs   : Métriques d'exécution (records_in, records_out, rejection_rate)
+    silver.products           : Table cible principale — upsert sur `code`
+    monitoring.pipeline_runs  : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 
 import re
-import datetime
-from airflow.decorators import task
-from airflow.hooks.base import BaseHook
+import pendulum
+from airflow.decorators import task_group
 from airflow.models import DAG, Variable
 from airflow.models.xcom_arg import XComArg
 from airflow.operators.empty import EmptyOperator
@@ -55,10 +61,10 @@ DAG_ID = "off_weekly_delta_load"
 
 args = {
     'owner': 'airflow',
-    'start_date': datetime.datetime(2026, 1, 1),
+    'start_date': pendulum.datetime(2026, 1, 1, tz="America/Montreal"),
     'email_on_failure': True,
     'retries': 1,
-    'retry_delay': datetime.timedelta(minutes=60),
+    'retry_delay': pendulum.duration(minutes=60),
 }
 
 dag = DAG(
@@ -71,8 +77,7 @@ dag = DAG(
     tags=['mig8110', 'off', 'delta'],
 )
 
-# Connexions — utilisées uniquement par les opérateurs classiques (Jinja rendu par Airflow).
-# À l'intérieur d'un @task, les templates ne sont pas rendus : on utilise BaseHook à la place.
+# Connexions Airflow — rendues par Jinja au moment de l'exécution des opérateurs classiques.
 s3_env_vars = {
     "S3_ENDPOINT":   "{{ conn.s3_conn.host }}",
     "S3_ACCESS_KEY": "{{ conn.s3_conn.login }}",
@@ -88,8 +93,8 @@ airflow_env_vars = {
 }
 
 DATABASE_NAME  = "off"
-STAGING_SCHEMA = "staging"
-STAGING_TABLE  = "source_transformed"
+SILVER_SCHEMA  = "silver"
+SILVER_TABLE   = "products"
 
 AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
@@ -103,16 +108,9 @@ DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
 FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
-    "ecoscore_score|environmental_score_score",
-    "ecoscore_grade|environmental_score_grade",
-    "images", "ingredients_tags",
-    "nutriscore_score", "nutriscore_grade", "nutriments",
+    "ecoscore_score|environmental_score_score", "ecoscore_grade|environmental_score_grade",
+    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutriments",
 ])
-
-
-def _pending_files(all_files, last_file):
-    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs."""
-    return [f for f in all_files if f > last_file] if last_file else all_files
 
 
 with dag:
@@ -124,7 +122,7 @@ with dag:
     # et pousse la liste dans XCom via do_xcom_push=True.
     fetch_delta_index = CustomKubernetesPodOperator(
         dag=dag,
-        name='fetch_delta_index',
+        name='fetch-delta-index',
         task_id='fetch_delta_index',
         image=IMAGE,
         arguments=[
@@ -135,8 +133,12 @@ with dag:
     )
 
     # ── 2. Save + calcul des pending ─────────────────────────────────────────
+    # Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs.
+    def _pending_files(all_files, last_file):
+        return [f for f in all_files if f > last_file] if last_file else all_files
+
     # Persiste la liste complète dans la Variable Airflow ET retourne les fichiers
-    # pending via XCom pour alimenter expand() à l'étape suivante.
+    # pending via XCom pour alimenter build_file_params à l'étape suivante.
     #
     # cas 1 — Variables vides    : last_file=None  → pending = toute la liste
     # cas 2 — Nouveaux fichiers  : last_file=X     → pending = fichiers > X
@@ -159,12 +161,12 @@ with dag:
 
     # ── 3. Branchement ───────────────────────────────────────────────────────
     # Lit le XCom de save_delta_file_list (liste des fichiers pending).
-    # S'il y a des fichiers à traiter → process_delta_file (expand crée 1 instance par fichier).
+    # S'il y a des fichiers à traiter → build_file_params (puis pipeline_per_file).
     # Sinon → end (toutes les tâches de traitement apparaissent en rose/skipped dans l'UI).
     def _check_new_files(ti):
         pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
         print(f"[check_new_files] {len(pending)} fichier(s) en attente")
-        return 'process_delta_file' if pending else 'end'
+        return 'build_file_params' if pending else 'end'
 
     check_new_files = BranchPythonOperator(
         task_id='check_new_files',
@@ -172,134 +174,146 @@ with dag:
         dag=dag,
     )
 
-    # ── 4. Dynamic Task Mapping — 1 task instance par fichier ───────────────
-    # Technique : @task + expand() (Airflow 2.3+) — les instances sont créées au
-    # runtime depuis le XCom de save_delta_file_list, contrairement au TaskGroup
-    # qui génère les tâches statiquement au parse-time.
-    # Chaque instance exécute séquentiellement les 5 étapes ETL pour un fichier delta.
-    # Les connexions sont résolues via BaseHook car les templates Jinja ne sont pas
-    # rendus à l'intérieur d'un @task.
-    @task(task_id='process_delta_file', dag=dag)
-    def process_delta_file(stem: str, **context):
+    # ── 4. Pré-calcul des paramètres par fichier ─────────────────────────────
+    # Le corps d'un @task_group s'exécute au parse-time : les arguments reçus via
+    # expand_kwargs() sont des MappedArgument — impossibles à transformer avec du
+    # code Python (str.replace, re.findall, f-strings...).
+    # Ce PythonOperator calcule à l'avance toutes les chaînes dérivées (clés S3,
+    # noms de pods) pour chaque fichier pending et retourne une liste de dicts plats.
+    # expand_kwargs() distribue ensuite chaque dict comme paramètres nommés à une
+    # instance du groupe pipeline_per_file.
+    def _build_file_params(ti) -> list:
+        pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
+        result = []
+        for s in pending:
+            sk = s.replace('.json.gz', '')
+            ps = '-'.join(re.findall(r'\d+', s)[-2:])
+            result.append({
+                'stem':           s,
+                'extract_name':   f'extract-delta-{ps}',
+                'filter_name':    f'filter-delta-{ps}',
+                'validate_name':  f'validate-data-{ps}',
+                'transform_name': f'transform-delta-{ps}',
+                'load_name':      f'load-delta-{ps}',
+                'raw_key':        f'{DAG_ID}/bronze/{sk}.parquet',
+                'filtered_key':   f'{DAG_ID}/bronze/{sk}_filtered.parquet',
+                'valid_key':      f'{DAG_ID}/bronze/{sk}_valid.parquet',
+                'invalid_key':    f'{DAG_ID}/bronze/{sk}_invalid.parquet',
+                'transformed_key':f'{DAG_ID}/bronze/{sk}_transformed.parquet',
+            })
+        return result
 
-        # Résolution des connexions au runtime
-        s3_conn     = BaseHook.get_connection('s3_conn')
-        duckdb_conn = BaseHook.get_connection('duckdb_default')
+    build_file_params = PythonOperator(
+        task_id='build_file_params',
+        python_callable=_build_file_params,
+        dag=dag,
+    )
 
-        resolved_s3_env_vars = {
-            "S3_ENDPOINT":   s3_conn.host,
-            "S3_ACCESS_KEY": s3_conn.login,
-            "S3_SECRET_KEY": s3_conn.password,
-            "S3_BUCKET":     s3_conn.schema,
-        }
-        resolved_duckdb_env_vars = {
-            "DUCKDB_TOKEN": duckdb_conn.password,
-            "DUCKDB_DB":    duckdb_conn.schema,
-        }
-        resolved_airflow_env_vars = {
-            "AIRFLOW_CTX_DAG_RUN_ID": context.get('run_id', ''),
-        }
-
-        # Dérive les clés S3 et le suffixe du nom de pod depuis le nom de fichier.
-        # pod_suffix : 2 derniers groupes de chiffres (timestamps), ex: 1774687161-1774770293
-        stem_key   = stem.replace('.json.gz', '')
-        pod_suffix = '-'.join(re.findall(r'\d+', stem)[-2:])
+    # ── 5. Mapped Task Groups — 1 groupe de tâches par fichier ──────────────
+    # Technique : @task_group + expand_kwargs() (Airflow 2.5+) — un groupe de
+    # 5 tâches ETL (CustomKubernetesPodOperator) est instancié au runtime pour
+    # chaque fichier delta. Chaque étape a ses propres logs dans l'UI Airflow.
+    # Les templates Jinja (conn.*) sont rendus par Airflow car on utilise des
+    # opérateurs classiques.
+    @task_group(group_id='pipeline_per_file')
+    def pipeline_per_file(stem, extract_name, filter_name, validate_name, transform_name, load_name,
+                          raw_key, filtered_key, valid_key, invalid_key, transformed_key):
 
         # ── extract_delta ────────────────────────────────────────────────────
         # Télécharge le fichier .json.gz en chunks, filtre les enregistrements
         # canadiens et sérialise les colonnes complexes en JSON strings (Bronze).
-        CustomKubernetesPodOperator(
+        extract = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='extract_delta_pod',
-            name=f'extract-delta-{pod_suffix}',
+            task_id='extract_delta',
+            name=extract_name,
             image=IMAGE,
             arguments=[
                 "--command",         "extract_delta",
                 "--filename",        stem,
                 "--base_url",        DELTA_BASE_URL,
-                "--output_file_key", f"{DAG_ID}/delta/{stem_key}.parquet",
+                "--output_file_key", raw_key,
             ],
-            env_vars={**resolved_s3_env_vars, **resolved_airflow_env_vars},
+            env_vars={**s3_env_vars, **airflow_env_vars},
             do_xcom_push=False,
-        ).execute(context=context)
+        )
 
         # ── filter_delta ─────────────────────────────────────────────────────
         # Sélectionne les colonnes pertinentes avec fallback pour les champs renommés.
         # Les colonnes absentes sont incluses avec None pour garantir un schéma uniforme.
-        CustomKubernetesPodOperator(
+        filter_ = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='filter_delta_pod',
-            name=f'filter-delta-{pod_suffix}',
+            task_id='filter_delta',
+            name=filter_name,
             image=IMAGE,
             arguments=[
                 "--command",         "filter_delta",
-                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}.parquet",
-                "--output_file_key", f"{DAG_ID}/delta/{stem_key}_filtered.parquet",
+                "--input_file_key",  raw_key,
+                "--output_file_key", filtered_key,
                 "--columns",         FILTER_DELTA_COLUMNS,
             ],
-            env_vars={**resolved_s3_env_vars},
+            env_vars={**s3_env_vars},
             do_xcom_push=False,
-        ).execute(context=context)
+        )
 
         # ── validate_data ────────────────────────────────────────────────────
         # Applique les règles de validation (config/validation_rules.py).
         # Les invalides sont mis en quarantaine dans {stem_key}_invalid.parquet.
-        CustomKubernetesPodOperator(
+        validate = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='validate_data_pod',
-            name=f'validate-data-{pod_suffix}',
+            task_id='validate_data',
+            name=validate_name,
             image=IMAGE,
             arguments=[
                 "--command",          "validate_data",
-                "--input_file_key",   f"{DAG_ID}/delta/{stem_key}_filtered.parquet",
-                "--output_file_key",  f"{DAG_ID}/delta/{stem_key}_valid.parquet",
-                "--invalid_file_key", f"{DAG_ID}/delta/{stem_key}_invalid.parquet",
+                "--input_file_key",   filtered_key,
+                "--output_file_key",  valid_key,
+                "--invalid_file_key", invalid_key,
             ],
-            env_vars={**resolved_s3_env_vars, **resolved_duckdb_env_vars, **resolved_airflow_env_vars},
+            env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
             do_xcom_push=False,
-        ).execute(context=context)
+        )
 
         # ── transform_delta ──────────────────────────────────────────────────
         # Construit les URLs d'images, extrait les nutriments depuis le dict plat
         # et projette sur le schéma Silver (config/target_columns.py).
-        CustomKubernetesPodOperator(
+        transform = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='transform_delta_pod',
-            name=f'transform-delta-{pod_suffix}',
+            task_id='transform_delta',
+            name=transform_name,
             image=IMAGE,
             arguments=[
                 "--command",         "transform_delta",
-                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}_valid.parquet",
-                "--output_file_key", f"{DAG_ID}/delta/{stem_key}_transformed.parquet",
+                "--input_file_key",  valid_key,
+                "--output_file_key", transformed_key,
             ],
-            env_vars={**resolved_s3_env_vars},
+            env_vars={**s3_env_vars},
             do_xcom_push=False,
-        ).execute(context=context)
+        )
 
         # ── load_delta ───────────────────────────────────────────────────────
         # Upsert atomique dans MotherDuck : DELETE + INSERT dans une transaction explicite.
         # Si l'INSERT échoue, ROLLBACK annule le DELETE — la table reste dans son état d'origine.
         # Cible : off.staging.source_transformed (même table que le chargement initial).
-        CustomKubernetesPodOperator(
+        load = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='load_delta_pod',
-            name=f'load-delta-{pod_suffix}',
+            task_id='load_delta',
+            name=load_name,
             image=IMAGE,
             arguments=[
                 "--command",         "load_delta",
-                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}_transformed.parquet",
-                "--table_name",      STAGING_TABLE,
-                "--schema_name",     f"{DATABASE_NAME}.{STAGING_SCHEMA}",
+                "--input_file_key",  transformed_key,
+                "--table_name",      SILVER_TABLE,
+                "--schema_name",     f"{DATABASE_NAME}.{SILVER_SCHEMA}",
             ],
-            env_vars={**resolved_s3_env_vars, **resolved_duckdb_env_vars},
+            env_vars={**s3_env_vars, **duckdb_env_vars},
             do_xcom_push=False,
-        ).execute(context=context)
+        )
 
-    process_mapped = process_delta_file.expand(
-        stem=XComArg(save_delta_file_list)
-    )
+        extract >> filter_ >> validate >> transform >> load
 
-    # ── 5. Checkpoint ────────────────────────────────────────────────────────
+    process_mapped = pipeline_per_file.expand_kwargs(XComArg(build_file_params))
+
+    # ── 6. Checkpoint ────────────────────────────────────────────────────────
     # Persiste le dernier fichier traité dans la Variable Airflow pour le prochain run.
     # Lit le XCom de save_delta_file_list au runtime — toujours cohérent avec ce qui
     # a été effectivement traité dans ce run.
@@ -315,9 +329,10 @@ with dag:
         dag=dag,
     )
 
-    # ── 6. Fin ───────────────────────────────────────────────────────────────
+    # ── 7. Fin ───────────────────────────────────────────────────────────────
     # trigger_rule ALL_DONE : s'exécute quelle que soit la branche prise
-    # (process_delta_file → update_checkpoint en vert, ou skip direct en rose).
+    # (build_file_params → pipeline_per_file → update_checkpoint en vert,
+    #  ou skip direct en rose).
     end = EmptyOperator(
         task_id='end',
         trigger_rule='all_done',
@@ -325,6 +340,10 @@ with dag:
     )
 
     # ── Dépendances ──────────────────────────────────────────────────────────
+    # check_new_files >> build_file_params : dépendance explicite pour que
+    # BranchPythonOperator skipe build_file_params (et tout l'aval) quand
+    # pending=[]. La dépendance XCom save_delta_file_list→build_file_params
+    # est implicite (ti.xcom_pull dans _build_file_params).
     start >> fetch_delta_index >> save_delta_file_list >> check_new_files
-    check_new_files >> process_mapped >> update_checkpoint >> end
+    check_new_files >> build_file_params >> process_mapped >> update_checkpoint >> end
     check_new_files >> end
