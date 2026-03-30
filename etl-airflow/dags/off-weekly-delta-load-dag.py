@@ -41,6 +41,7 @@ Output MotherDuck (base: off) :
     monitoring.pipeline_runs   : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 import datetime
+from airflow.hooks.base import BaseHook
 from airflow.models import DAG, Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator, BranchPythonOperator
@@ -164,52 +165,68 @@ with dag:
         dag=dag,
     )
 
-    # ── 4. Traitement dynamique (SIMULÉ) — 1 task instance par fichier ───────
-    # expand() crée les instances AU RUNTIME depuis le XCom de save_delta_file_list.
-    #
-    # TODO : remplacer le corps de la fonction par les vrais appels :
-    #
-    #   extract_delta = CustomKubernetesPodOperator(
-    #       name=f'extract-delta-{stem}', image=IMAGE,
-    #       arguments=["--command", "extract_delta", "--file", stem, "--country", "canada"],
-    #       env_vars={**s3_env_vars, **airflow_env_vars},
-    #   )
-    #   extract_delta.execute(context=context)
-    #
-    #   filter_delta = CustomKubernetesPodOperator(
-    #       name=f'filter-delta-{stem}', image=IMAGE,
-    #       arguments=["--command", "filter_delta", "--file", stem, "--columns", FILTER_DELTA_COLUMNS],
-    #       env_vars={**s3_env_vars},
-    #   )
-    #   filter_delta.execute(context=context)
-    #
-    #   validate_data = CustomKubernetesPodOperator(
-    #       name=f'validate-data-{stem}', image=IMAGE,
-    #       arguments=["--command", "validate_data", "--file", stem],
-    #       env_vars={**s3_env_vars},
-    #   )
-    #   validate_data.execute(context=context)
-    #
-    #   transform_delta = CustomKubernetesPodOperator(
-    #       name=f'transform-delta-{stem}', image=IMAGE,
-    #       arguments=["--command", "transform_delta", "--file", stem],
-    #       env_vars={**s3_env_vars},
-    #   )
-    #   transform_delta.execute(context=context)
-    #
-    #   load_delta = CustomKubernetesPodOperator(
-    #       name=f'load-delta-{stem}', image=IMAGE,
-    #       arguments=["--command", "load_delta", "--file", stem,
-    #                  "--db", DATABASE_NAME, "--schema", STAGING_SCHEMA, "--table", STAGING_TABLE],
-    #       env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
-    #   )
-    #   load_delta.execute(context=context)
+    # ── 4. Traitement dynamique — 1 task instance par fichier ────────────────
+    # extract_delta : RÉEL (CustomKubernetesPodOperator via execute())
+    # filter_delta, validate_data, transform_delta, load_delta : SIMULÉS (print)
+    # TODO : décommenter chaque bloc au fur et à mesure des validations
     @task(task_id='process_delta_file', dag=dag)
-    def process_delta_file(stem: str):
-        steps = ["extract_delta", "filter_delta", "validate_data", "transform_delta", "load_delta"]
-        print(f"[process_delta_file] ── début : {stem} ──")
-        for step in steps:
-            print(f"  → [SIMULATION] {step} ({stem})")
+    def process_delta_file(stem: str, **context):
+        
+        # ── Résolution des connexions au runtime ─────────────────────────────
+        # Les templates Jinja {{ conn.xxx }} ne sont pas rendus quand on appelle
+        # execute() manuellement — on utilise BaseHook.get_connection() à la place.
+        s3_conn      = BaseHook.get_connection('s3_conn')
+        duckdb_conn  = BaseHook.get_connection('duckdb_default')
+
+        resolved_s3_env_vars = {
+            "S3_ENDPOINT":   s3_conn.host,
+            "S3_ACCESS_KEY": s3_conn.login,
+            "S3_SECRET_KEY": s3_conn.password,
+            "S3_BUCKET":     s3_conn.schema,
+        }
+        resolved_duckdb_env_vars = {
+            "DUCKDB_TOKEN": duckdb_conn.password,
+            "DUCKDB_DB":    duckdb_conn.schema,
+        }
+        resolved_airflow_env_vars = {
+            "AIRFLOW_CTX_DAG_RUN_ID": context.get('run_id', ''),
+        }
+
+        # ── extract_delta (RÉEL) ─────────────────────────────────────────────
+        print(f"[process_delta_file] ── extract_delta : {stem} ──")
+        extract_op = CustomKubernetesPodOperator(
+            dag=dag,
+            task_id=f'extract_delta__{stem}',       # task_id unique par fichier
+            name=f'extract-delta-{stem[:20]}',      # nom pod K8s (max 63 chars, tirets)
+            image=IMAGE,
+            arguments=[
+                "--command",         "extract_delta",
+                "--filename",        stem,
+                "--base_url",        DELTA_BASE_URL,
+                "--output_file_key", f"{DAG_ID}/delta/{stem.replace('.json.gz', '')}.parquet",
+            ],
+            env_vars={**resolved_s3_env_vars, **resolved_airflow_env_vars},
+            do_xcom_push=False,
+        )
+        extract_op.execute(context=context)
+        print(f"[process_delta_file] ── extract_delta terminé : {stem} ──")
+
+        # ── filter_delta (SIMULÉ) ────────────────────────────────────────────
+        # TODO : remplacer par CustomKubernetesPodOperator quand extract_delta validé
+        print(f"  → [SIMULATION] filter_delta ({stem})")
+
+        # ── validate_data (SIMULÉ) ───────────────────────────────────────────
+        # TODO : remplacer par CustomKubernetesPodOperator quand filter_delta validé
+        print(f"  → [SIMULATION] validate_data ({stem})")
+
+        # ── transform_delta (SIMULÉ) ─────────────────────────────────────────
+        # TODO : remplacer par CustomKubernetesPodOperator quand validate_data validé
+        print(f"  → [SIMULATION] transform_delta ({stem})")
+
+        # ── load_delta (SIMULÉ) ──────────────────────────────────────────────
+        # TODO : remplacer par CustomKubernetesPodOperator quand transform_delta validé
+        print(f"  → [SIMULATION] load_delta ({stem})")
+
         print(f"[process_delta_file] ── terminé : {stem} ──")
 
     process_mapped = process_delta_file.expand(
