@@ -1,317 +1,330 @@
+"""
+DAG : off_weekly_delta_load
+===========================
+Chargement incrémental hebdomadaire des produits alimentaires canadiens depuis Open Food Facts.
+
+Logique de checkpoint :
+    - `delta_file_list`           : liste complète des fichiers delta (Variable Airflow)
+    - `delta_last_processed_file` : dernier fichier traité (Variable Airflow)
+
+    Cas 1 — 1ère exécution (Variables vides) :
+        pending = toute la liste → process_delta_file se map sur tous les fichiers
+
+    Cas 2 — Exécutions suivantes, nouveaux fichiers détectés :
+        pending = fichiers postérieurs au checkpoint → process_delta_file se map sur le delta
+
+    Cas 3 — Aucun nouveau fichier :
+        pending = [] → check_new_files branche directement vers end (tâches en rose/skipped)
+
+Architecture — Dynamic Task Mapping (Airflow 2.3+) :
+    Remplace le TaskGroup dynamique (génération parse-time) par expand() (génération runtime).
+    Une task instance par fichier, créée au moment de l'exécution à partir du XCom.
+    concurrency=1 garantit le traitement séquentiel (1 fichier à la fois).
+
+Pipeline (par fichier delta, 1 task instance par fichier) :
+    extract_delta  : Télécharge le fichier .json.gz, filtre par pays, uploade en parquet (Bronze)
+    filter_delta   : Sélectionne les colonnes utiles avec fallback pour les champs renommés
+    validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
+    transform_delta: Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
+    load_delta     : Upsert atomique dans MotherDuck (off.staging.source_transformed) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
+
+Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/delta/) :
+    {stem}.parquet             : Enregistrements bruts filtrés par pays (Bronze)
+    {stem}_filtered.parquet    : Colonnes sélectionnées
+    {stem}_valid.parquet       : Enregistrements valides
+    {stem}_invalid.parquet     : Enregistrements invalides (quarantaine)
+    {stem}_transformed.parquet : Enregistrements transformés prêts pour le chargement
+
+Output MotherDuck (base: off) :
+    staging.source_transformed : Table cible principale — upsert sur `code`
+    monitoring.pipeline_runs   : Métriques d'exécution (records_in, records_out, rejection_rate)
+"""
+
+import re
 import datetime
-from airflow.models import DAG
+from airflow.decorators import task
+from airflow.hooks.base import BaseHook
+from airflow.models import DAG, Variable
+from airflow.models.xcom_arg import XComArg
 from airflow.operators.empty import EmptyOperator
-from plugins.operators.duckdb_operator import DuckDBOperator
+from airflow.operators.python import PythonOperator, BranchPythonOperator
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
 
+IMAGE  = "mig8110/etl-images:1.0.0"
+DAG_ID = "off_weekly_delta_load"
 
 args = {
     'owner': 'airflow',
     'start_date': datetime.datetime(2026, 1, 1),
     'email_on_failure': True,
     'retries': 1,
-    'retry_delay': datetime.timedelta(minutes=60)
+    'retry_delay': datetime.timedelta(minutes=60),
 }
 
 dag = DAG(
-    dag_id='off_weekly_delta_load',
+    dag_id=DAG_ID,
     default_args=args,
+    max_active_runs=1,
+    concurrency=1,
     schedule_interval='@weekly',
     catchup=False,
-    tags=['mig8110', 'off', 'delta']
+    tags=['mig8110', 'off', 'delta'],
 )
 
+# Connexions — utilisées uniquement par les opérateurs classiques (Jinja rendu par Airflow).
+# À l'intérieur d'un @task, les templates ne sont pas rendus : on utilise BaseHook à la place.
 s3_env_vars = {
-    "S3_ENDPOINT": "{{ conn.s3_conn.host }}",
+    "S3_ENDPOINT":   "{{ conn.s3_conn.host }}",
     "S3_ACCESS_KEY": "{{ conn.s3_conn.login }}",
     "S3_SECRET_KEY": "{{ conn.s3_conn.password }}",
-    "S3_BUCKET": "{{ conn.s3_conn.schema }}",
-    }
-
+    "S3_BUCKET":     "{{ conn.s3_conn.schema }}",
+}
 duckdb_env_vars = {
     "DUCKDB_TOKEN": "{{ conn.duckdb_default.password }}",
-    "DUCKDB_DB": "{{ conn.duckdb_default.schema }}",
-    }
+    "DUCKDB_DB":    "{{ conn.duckdb_default.schema }}",
+}
+airflow_env_vars = {
+    "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
+}
 
-DATABASE_NAME="off"
-SCHEMA_NAME="raw"
-SOURCE_TABLE_NAME="canada_products"
-DELTA_TABLE_NAME="delta_canada_products"
-PRODUCTS_TABLE_NAME="products"
-DELTA_FILE_KEY="delta.jsonl"
+DATABASE_NAME  = "off"
+STAGING_SCHEMA = "staging"
+STAGING_TABLE  = "source_transformed"
+
+AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
+AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
+
+DELTA_INDEX_URL = "https://static.openfoodfacts.org/data/delta/index.txt"
+DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
+
+# Colonnes à conserver lors du filtrage delta.
+# La syntaxe pipe (target|fallback) gère les champs renommés entre versions de fichiers delta :
+# si la colonne cible est absente, la colonne de secours est utilisée et renommée.
+FILTER_DELTA_COLUMNS = ",".join([
+    "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
+    "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
+    "ecoscore_score|environmental_score_score",
+    "ecoscore_grade|environmental_score_grade",
+    "images", "ingredients_tags",
+    "nutriscore_score", "nutriscore_grade", "nutriments",
+])
+
+
+def _pending_files(all_files, last_file):
+    """Retourne les fichiers à traiter : tous si pas de checkpoint, sinon ceux postérieurs."""
+    return [f for f in all_files if f > last_file] if last_file else all_files
+
 
 with dag:
 
     start = EmptyOperator(task_id='start')
 
-    create_schema = DuckDBOperator(
+    # ── 1. Fetch ─────────────────────────────────────────────────────────────
+    # Lit index.txt depuis Open Food Facts, trie les fichiers chronologiquement
+    # et pousse la liste dans XCom via do_xcom_push=True.
+    fetch_delta_index = CustomKubernetesPodOperator(
         dag=dag,
-        task_id='create-schema',
-        sql=f"CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{SCHEMA_NAME}",
-        duckdb_conn_id='duckdb_default'
-        )
-    
-    extract_delta = CustomKubernetesPodOperator(
-        dag=dag,
-        name='extract-delta',
-        image="mig8110/etl-images:1.0.0",
-        env_vars={**s3_env_vars},
+        name='fetch_delta_index',
+        task_id='fetch_delta_index',
+        image=IMAGE,
         arguments=[
-            "--command", "extract_delta",
-            "--output_file_key", DELTA_FILE_KEY,
-            "--url", "https://static.openfoodfacts.org/data/delta/index.txt"
-            ]
-        )
-    
-    load_delta = CustomKubernetesPodOperator(
+            "--command", "fetch_delta_index",
+            "--url",     DELTA_INDEX_URL,
+        ],
+        do_xcom_push=True,
+    )
+
+    # ── 2. Save + calcul des pending ─────────────────────────────────────────
+    # Persiste la liste complète dans la Variable Airflow ET retourne les fichiers
+    # pending via XCom pour alimenter expand() à l'étape suivante.
+    #
+    # cas 1 — Variables vides    : last_file=None  → pending = toute la liste
+    # cas 2 — Nouveaux fichiers  : last_file=X     → pending = fichiers > X
+    # cas 3 — Rien de nouveau    : last_file=X     → pending = []
+    def _save_delta_file_list(ti) -> list:
+        all_files = ti.xcom_pull(task_ids='fetch_delta_index') or []
+        last_file = Variable.get(AIRFLOW_VAR_LAST_PROCESSED_FILE, default_var=None)
+
+        Variable.set(AIRFLOW_VAR_DELTA_FILE_LIST, all_files, serialize_json=True)
+
+        pending = _pending_files(all_files, last_file)
+        print(f"[save_delta_file_list] total={len(all_files)} | last='{last_file}' | pending={len(pending)}")
+        return pending
+
+    save_delta_file_list = PythonOperator(
+        task_id='save_delta_file_list',
+        python_callable=_save_delta_file_list,
         dag=dag,
-        name='load-delta',
-        image="mig8110/etl-images:1.0.0",
-        env_vars={**s3_env_vars, **duckdb_env_vars},
-        arguments=[
-            "--command", "load_delta",
-            "--input_file_key", DELTA_FILE_KEY,
-            "--table_name", DELTA_TABLE_NAME,
-            "--schema_name", f"{DATABASE_NAME}.{SCHEMA_NAME}"
-            ]
-        )
+    )
 
-    # Transform images: add URL columns to canada_products
-    transform_images_source = DuckDBOperator(
+    # ── 3. Branchement ───────────────────────────────────────────────────────
+    # Lit le XCom de save_delta_file_list (liste des fichiers pending).
+    # S'il y a des fichiers à traiter → process_delta_file (expand crée 1 instance par fichier).
+    # Sinon → end (toutes les tâches de traitement apparaissent en rose/skipped dans l'UI).
+    def _check_new_files(ti):
+        pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
+        print(f"[check_new_files] {len(pending)} fichier(s) en attente")
+        return 'process_delta_file' if pending else 'end'
+
+    check_new_files = BranchPythonOperator(
+        task_id='check_new_files',
+        python_callable=_check_new_files,
         dag=dag,
-        task_id='transform-images-source',
-        sql=f"""
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS front_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS ingredients_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS nutrition_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS packaging_url VARCHAR;
+    )
 
-            UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} SET
-                front_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/front_en.' || CAST(list_filter(images, x -> x.key = 'front_en')[1].rev AS INTEGER) || '.400.jpg',
-                ingredients_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/ingredients_en.' || CAST(list_filter(images, x -> x.key = 'ingredients_en')[1].rev AS INTEGER) || '.400.jpg',
-                nutrition_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/nutrition_en.' || CAST(list_filter(images, x -> x.key = 'nutrition_en')[1].rev AS INTEGER) || '.400.jpg',
-                packaging_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/packaging_en.' || CAST(list_filter(images, x -> x.key = 'packaging_en')[1].rev AS INTEGER) || '.400.jpg';
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
+    # ── 4. Dynamic Task Mapping — 1 task instance par fichier ───────────────
+    # Technique : @task + expand() (Airflow 2.3+) — les instances sont créées au
+    # runtime depuis le XCom de save_delta_file_list, contrairement au TaskGroup
+    # qui génère les tâches statiquement au parse-time.
+    # Chaque instance exécute séquentiellement les 5 étapes ETL pour un fichier delta.
+    # Les connexions sont résolues via BaseHook car les templates Jinja ne sont pas
+    # rendus à l'intérieur d'un @task.
+    @task(task_id='process_delta_file', dag=dag)
+    def process_delta_file(stem: str, **context):
 
-    # Transform images: add URL columns to delta_canada_products
-    transform_images_delta = DuckDBOperator(
+        # Résolution des connexions au runtime
+        s3_conn     = BaseHook.get_connection('s3_conn')
+        duckdb_conn = BaseHook.get_connection('duckdb_default')
+
+        resolved_s3_env_vars = {
+            "S3_ENDPOINT":   s3_conn.host,
+            "S3_ACCESS_KEY": s3_conn.login,
+            "S3_SECRET_KEY": s3_conn.password,
+            "S3_BUCKET":     s3_conn.schema,
+        }
+        resolved_duckdb_env_vars = {
+            "DUCKDB_TOKEN": duckdb_conn.password,
+            "DUCKDB_DB":    duckdb_conn.schema,
+        }
+        resolved_airflow_env_vars = {
+            "AIRFLOW_CTX_DAG_RUN_ID": context.get('run_id', ''),
+        }
+
+        # Dérive les clés S3 et le suffixe du nom de pod depuis le nom de fichier.
+        # pod_suffix : 2 derniers groupes de chiffres (timestamps), ex: 1774687161-1774770293
+        stem_key   = stem.replace('.json.gz', '')
+        pod_suffix = '-'.join(re.findall(r'\d+', stem)[-2:])
+
+        # ── extract_delta ────────────────────────────────────────────────────
+        # Télécharge le fichier .json.gz en chunks, filtre les enregistrements
+        # canadiens et sérialise les colonnes complexes en JSON strings (Bronze).
+        CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='extract_delta_pod',
+            name=f'extract-delta-{pod_suffix}',
+            image=IMAGE,
+            arguments=[
+                "--command",         "extract_delta",
+                "--filename",        stem,
+                "--base_url",        DELTA_BASE_URL,
+                "--output_file_key", f"{DAG_ID}/delta/{stem_key}.parquet",
+            ],
+            env_vars={**resolved_s3_env_vars, **resolved_airflow_env_vars},
+            do_xcom_push=False,
+        ).execute(context=context)
+
+        # ── filter_delta ─────────────────────────────────────────────────────
+        # Sélectionne les colonnes pertinentes avec fallback pour les champs renommés.
+        # Les colonnes absentes sont incluses avec None pour garantir un schéma uniforme.
+        CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='filter_delta_pod',
+            name=f'filter-delta-{pod_suffix}',
+            image=IMAGE,
+            arguments=[
+                "--command",         "filter_delta",
+                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}.parquet",
+                "--output_file_key", f"{DAG_ID}/delta/{stem_key}_filtered.parquet",
+                "--columns",         FILTER_DELTA_COLUMNS,
+            ],
+            env_vars={**resolved_s3_env_vars},
+            do_xcom_push=False,
+        ).execute(context=context)
+
+        # ── validate_data ────────────────────────────────────────────────────
+        # Applique les règles de validation (config/validation_rules.py).
+        # Les invalides sont mis en quarantaine dans {stem_key}_invalid.parquet.
+        CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='validate_data_pod',
+            name=f'validate-data-{pod_suffix}',
+            image=IMAGE,
+            arguments=[
+                "--command",          "validate_data",
+                "--input_file_key",   f"{DAG_ID}/delta/{stem_key}_filtered.parquet",
+                "--output_file_key",  f"{DAG_ID}/delta/{stem_key}_valid.parquet",
+                "--invalid_file_key", f"{DAG_ID}/delta/{stem_key}_invalid.parquet",
+            ],
+            env_vars={**resolved_s3_env_vars, **resolved_duckdb_env_vars, **resolved_airflow_env_vars},
+            do_xcom_push=False,
+        ).execute(context=context)
+
+        # ── transform_delta ──────────────────────────────────────────────────
+        # Construit les URLs d'images, extrait les nutriments depuis le dict plat
+        # et projette sur le schéma Silver (config/target_columns.py).
+        CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='transform_delta_pod',
+            name=f'transform-delta-{pod_suffix}',
+            image=IMAGE,
+            arguments=[
+                "--command",         "transform_delta",
+                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}_valid.parquet",
+                "--output_file_key", f"{DAG_ID}/delta/{stem_key}_transformed.parquet",
+            ],
+            env_vars={**resolved_s3_env_vars},
+            do_xcom_push=False,
+        ).execute(context=context)
+
+        # ── load_delta ───────────────────────────────────────────────────────
+        # Upsert atomique dans MotherDuck : DELETE + INSERT dans une transaction explicite.
+        # Si l'INSERT échoue, ROLLBACK annule le DELETE — la table reste dans son état d'origine.
+        # Cible : off.staging.source_transformed (même table que le chargement initial).
+        CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='load_delta_pod',
+            name=f'load-delta-{pod_suffix}',
+            image=IMAGE,
+            arguments=[
+                "--command",         "load_delta",
+                "--input_file_key",  f"{DAG_ID}/delta/{stem_key}_transformed.parquet",
+                "--table_name",      STAGING_TABLE,
+                "--schema_name",     f"{DATABASE_NAME}.{STAGING_SCHEMA}",
+            ],
+            env_vars={**resolved_s3_env_vars, **resolved_duckdb_env_vars},
+            do_xcom_push=False,
+        ).execute(context=context)
+
+    process_mapped = process_delta_file.expand(
+        stem=XComArg(save_delta_file_list)
+    )
+
+    # ── 5. Checkpoint ────────────────────────────────────────────────────────
+    # Persiste le dernier fichier traité dans la Variable Airflow pour le prochain run.
+    # Lit le XCom de save_delta_file_list au runtime — toujours cohérent avec ce qui
+    # a été effectivement traité dans ce run.
+    def _update_checkpoint(ti):
+        pending = ti.xcom_pull(task_ids='save_delta_file_list') or []
+        if pending:
+            Variable.set(AIRFLOW_VAR_LAST_PROCESSED_FILE, pending[-1])
+            print(f"[update_checkpoint] checkpoint → '{pending[-1]}'")
+
+    update_checkpoint = PythonOperator(
+        task_id='update_checkpoint',
+        python_callable=_update_checkpoint,
         dag=dag,
-        task_id='transform-images-delta',
-        sql=f"""
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS front_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS ingredients_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS nutrition_url VARCHAR;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS packaging_url VARCHAR;
+    )
 
-            UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} SET
-                front_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/front_en.' || REPLACE(images.selected.front.en.rev, '"', '') || '.400.jpg',
-                ingredients_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/ingredients_en.' || REPLACE(images.selected.ingredients.en.rev, '"', '') || '.400.jpg',
-                nutrition_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/nutrition_en.' || REPLACE(images.selected.nutrition.en.rev, '"', '') || '.400.jpg',
-                packaging_url = 'https://images.openfoodfacts.org/images/products/' ||
-                    substr(lpad(code, 13, '0'), 1, 3) || '/' || substr(lpad(code, 13, '0'), 4, 3) || '/' ||
-                    substr(lpad(code, 13, '0'), 7, 3) || '/' || substr(lpad(code, 13, '0'), 10, 4) ||
-                    '/packaging_en.' || REPLACE(images.selected.packaging.en.rev, '"', '') || '.400.jpg';
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-
-    # Transform nutriments: extract 14 nutriment values from canada_products
-    transform_nutriments_source = DuckDBOperator(
+    # ── 6. Fin ───────────────────────────────────────────────────────────────
+    # trigger_rule ALL_DONE : s'exécute quelle que soit la branche prise
+    # (process_delta_file → update_checkpoint en vert, ou skip direct en rose).
+    end = EmptyOperator(
+        task_id='end',
+        trigger_rule='all_done',
         dag=dag,
-        task_id='transform-nutriments-source',
-        sql=f"""
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS energy_kcal_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS saturated_fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS trans_fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS cholesterol_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS sodium_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS salt_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS carbohydrates_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS fiber_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS sugars_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS proteins_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS calcium_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS iron_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS potassium_100g DOUBLE;
+    )
 
-            UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} SET
-                energy_kcal_100g = list_filter(nutriments, x -> x.name = 'energy-kcal')[1]."100g",
-                fat_100g = list_filter(nutriments, x -> x.name = 'fat')[1]."100g",
-                saturated_fat_100g = list_filter(nutriments, x -> x.name = 'saturated-fat')[1]."100g",
-                trans_fat_100g = list_filter(nutriments, x -> x.name = 'trans-fat')[1]."100g",
-                cholesterol_100g = list_filter(nutriments, x -> x.name = 'cholesterol')[1]."100g",
-                sodium_100g = list_filter(nutriments, x -> x.name = 'sodium')[1]."100g",
-                salt_100g = list_filter(nutriments, x -> x.name = 'salt')[1]."100g",
-                carbohydrates_100g = list_filter(nutriments, x -> x.name = 'carbohydrates')[1]."100g",
-                fiber_100g = list_filter(nutriments, x -> x.name = 'fiber')[1]."100g",
-                sugars_100g = list_filter(nutriments, x -> x.name = 'sugars')[1]."100g",
-                proteins_100g = list_filter(nutriments, x -> x.name = 'proteins')[1]."100g",
-                calcium_100g = list_filter(nutriments, x -> x.name = 'calcium')[1]."100g",
-                iron_100g = list_filter(nutriments, x -> x.name = 'iron')[1]."100g",
-                potassium_100g = list_filter(nutriments, x -> x.name = 'potassium')[1]."100g";
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-
-    # Transform nutriments: extract 14 nutriment values from delta_canada_products
-    transform_nutriments_delta = DuckDBOperator(
-        dag=dag,
-        task_id='transform-nutriments-delta',
-        sql=f"""
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS energy_kcal_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS saturated_fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS trans_fat_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS cholesterol_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS sodium_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS salt_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS carbohydrates_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS fiber_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS sugars_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS proteins_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS calcium_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS iron_100g DOUBLE;
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} ADD COLUMN IF NOT EXISTS potassium_100g DOUBLE;
-
-            UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME} SET
-                energy_kcal_100g = nutriments."energy-kcal_100g",
-                fat_100g = nutriments.fat_100g,
-                saturated_fat_100g = nutriments."saturated-fat_100g",
-                trans_fat_100g = nutriments."trans-fat_100g",
-                cholesterol_100g = nutriments.cholesterol_100g,
-                sodium_100g = nutriments.sodium_100g,
-                salt_100g = nutriments.salt_100g,
-                carbohydrates_100g = nutriments.carbohydrates_100g,
-                fiber_100g = nutriments.fiber_100g,
-                sugars_100g = nutriments.sugars_100g,
-                proteins_100g = nutriments.proteins_100g,
-                calcium_100g = nutriments.calcium_100g,
-                iron_100g = nutriments.iron_100g,
-                potassium_100g = nutriments.potassium_100g;
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-
-    # Transform product_name: extract main text from canada_products (delta is already VARCHAR)
-    transform_product_name = DuckDBOperator(
-        dag=dag,
-        task_id='transform-product-name-source',
-        sql=f"""
-            ALTER TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} ADD COLUMN IF NOT EXISTS product_name_text VARCHAR;
-            UPDATE {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME} SET
-                product_name_text = list_filter(product_name, x -> x.lang = 'main')[1].text;
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-
-    # Upsert: update existing products by code, insert new ones
-    merge_delta = DuckDBOperator(
-        dag=dag,
-        task_id='merge-delta',
-        sql=f"""
-            CREATE OR REPLACE TABLE {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS
-                SELECT code, product_name_text AS product_name, brands, product_quantity, product_quantity_unit,
-                       quantity, serving_quantity, serving_size,
-                       categories_tags, countries_tags,
-                       ecoscore_score, ecoscore_grade,
-                       ingredients_tags,
-                       nutriscore_score, nutriscore_grade,
-                       front_url, ingredients_url, nutrition_url, packaging_url,
-                       energy_kcal_100g, fat_100g, saturated_fat_100g, trans_fat_100g,
-                       cholesterol_100g, sodium_100g, salt_100g, carbohydrates_100g,
-                       fiber_100g, sugars_100g, proteins_100g,
-                       calcium_100g, iron_100g, potassium_100g
-                FROM {DATABASE_NAME}.{SCHEMA_NAME}.{SOURCE_TABLE_NAME};
-
-            MERGE INTO {DATABASE_NAME}.{SCHEMA_NAME}.{PRODUCTS_TABLE_NAME} AS target
-            USING (
-                SELECT code, product_name, brands, product_quantity, product_quantity_unit,
-                       quantity, serving_quantity, serving_size,
-                       categories_tags, countries_tags,
-                       ecoscore_score, ecoscore_grade,
-                       ingredients_tags,
-                       nutriscore_score, nutriscore_grade,
-                       front_url, ingredients_url, nutrition_url, packaging_url,
-                       energy_kcal_100g, fat_100g, saturated_fat_100g, trans_fat_100g,
-                       cholesterol_100g, sodium_100g, salt_100g, carbohydrates_100g,
-                       fiber_100g, sugars_100g, proteins_100g,
-                       calcium_100g, iron_100g, potassium_100g
-                FROM {DATABASE_NAME}.{SCHEMA_NAME}.{DELTA_TABLE_NAME}
-            ) AS source
-            ON target.code = source.code
-            WHEN MATCHED THEN UPDATE SET
-                product_name = source.product_name,
-                brands = source.brands,
-                product_quantity = source.product_quantity, product_quantity_unit = source.product_quantity_unit,
-                quantity = source.quantity, serving_quantity = source.serving_quantity,
-                serving_size = source.serving_size, categories_tags = source.categories_tags,
-                countries_tags = source.countries_tags, ecoscore_score = source.ecoscore_score,
-                ecoscore_grade = source.ecoscore_grade,
-                ingredients_tags = source.ingredients_tags,
-                nutriscore_score = source.nutriscore_score, nutriscore_grade = source.nutriscore_grade,
-                front_url = source.front_url, ingredients_url = source.ingredients_url,
-                nutrition_url = source.nutrition_url, packaging_url = source.packaging_url,
-                energy_kcal_100g = source.energy_kcal_100g, fat_100g = source.fat_100g,
-                saturated_fat_100g = source.saturated_fat_100g, trans_fat_100g = source.trans_fat_100g,
-                cholesterol_100g = source.cholesterol_100g, sodium_100g = source.sodium_100g,
-                salt_100g = source.salt_100g, carbohydrates_100g = source.carbohydrates_100g,
-                fiber_100g = source.fiber_100g, sugars_100g = source.sugars_100g,
-                proteins_100g = source.proteins_100g,
-                calcium_100g = source.calcium_100g, iron_100g = source.iron_100g,
-                potassium_100g = source.potassium_100g
-            WHEN NOT MATCHED THEN INSERT (
-                code, product_name, brands, product_quantity, product_quantity_unit,
-                quantity, serving_quantity, serving_size,
-                categories_tags, countries_tags,
-                ecoscore_score, ecoscore_grade,
-                ingredients_tags,
-                nutriscore_score, nutriscore_grade,
-                front_url, ingredients_url, nutrition_url, packaging_url,
-                energy_kcal_100g, fat_100g, saturated_fat_100g, trans_fat_100g,
-                cholesterol_100g, sodium_100g, salt_100g, carbohydrates_100g,
-                fiber_100g, sugars_100g, proteins_100g,
-                calcium_100g, iron_100g, potassium_100g
-            ) VALUES (
-                source.code, source.product_name, source.brands, source.product_quantity, source.product_quantity_unit,
-                source.quantity, source.serving_quantity, source.serving_size,
-                source.categories_tags, source.countries_tags,
-                source.ecoscore_score, source.ecoscore_grade,
-                source.ingredients_tags,
-                source.nutriscore_score, source.nutriscore_grade,
-                source.front_url, source.ingredients_url, source.nutrition_url, source.packaging_url,
-                source.energy_kcal_100g, source.fat_100g, source.saturated_fat_100g, source.trans_fat_100g,
-                source.cholesterol_100g, source.sodium_100g, source.salt_100g, source.carbohydrates_100g,
-                source.fiber_100g, source.sugars_100g, source.proteins_100g,
-                source.calcium_100g, source.iron_100g, source.potassium_100g
-            );
-        """,
-        duckdb_conn_id='duckdb_default'
-        )
-    
-    end = EmptyOperator(task_id='end')
-
-    start >> create_schema >> extract_delta >> load_delta >> [transform_images_source, transform_images_delta, transform_product_name, transform_nutriments_source, transform_nutriments_delta] >> merge_delta >> end
+    # ── Dépendances ──────────────────────────────────────────────────────────
+    start >> fetch_delta_index >> save_delta_file_list >> check_new_files
+    check_new_files >> process_mapped >> update_checkpoint >> end
+    check_new_files >> end
