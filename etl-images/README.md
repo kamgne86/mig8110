@@ -108,21 +108,23 @@ python run.py \
 
 Sélectionne uniquement les colonnes pertinentes depuis le parquet delta. Supporte la syntaxe pipe (`target|fallback`) pour gérer les colonnes renommées entre versions de fichiers delta. Les colonnes absentes sont incluses avec des valeurs `None` pour garantir un schéma uniforme.
 
+> **Note :** La colonne `nutrition` est extraite à la place de `nutriments` (qui existe dans les deltas mais est majoritairement vide). Le renommage vers `nutriments` est effectué dans `transform_delta`.
+
 ```bash
 python run.py \
   --command=filter_delta \
   --input_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745.parquet \
   --output_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_filtered.parquet \
-  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score|environmental_score_score,ecoscore_grade|environmental_score_grade,images,ingredients_tags,nutriscore_score,nutriscore_grade,nutriments
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score|environmental_score_score,ecoscore_grade|environmental_score_grade,images,ingredients_tags,nutriscore_score,nutriscore_grade,nutrition
 ```
 
-### validate_data (réutilisée)
+### validate_delta
 
-Valide les enregistrements du parquet filtré delta. Même commande que pour le chargement initial.
+Valide les enregistrements du parquet filtré delta. Utilise des règles de validation spécifiques aux deltas (`validation_rules_delta.py`), notamment la vérification de la colonne `nutrition` (au lieu de `nutriments` pour le chargement initial).
 
 ```bash
 python run.py \
-  --command=validate_data \
+  --command=validate_delta \
   --input_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_filtered.parquet \
   --output_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_valid.parquet \
   --invalid_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_invalid.parquet
@@ -144,9 +146,6 @@ python run.py \
 Charge le parquet transformé depuis S3 et effectue un upsert dans MotherDuck : supprime les lignes existantes dont le `code` est présent dans le fichier, puis insère toutes les lignes. Garantit qu'un produit modifié remplace son ancienne version sans doublons.
 
 ```bash
-export DUCKDB_TOKEN=<token>
-export DUCKDB_DB=<database>
-
 python run.py \
   --command=load_delta \
   --input_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_transformed.parquet \

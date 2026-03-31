@@ -24,7 +24,7 @@ def _resolve_columns(df, columns):
         candidates = parts
 
         for candidate in candidates:
-            if candidate in df.columns and df[candidate].notna().any():
+            if candidate in df.columns:
                 resolved[target] = candidate
                 break
 
