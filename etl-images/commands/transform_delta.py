@@ -75,12 +75,13 @@ def _parse_json(value):
     return value
 
 
-def _extract_nutriment(nutriments, nutriment_name):
-    """Extrait une valeur nutritionnelle depuis le dict plat du format delta."""
-    if nutriments is None:
+def _extract_nutriment(nutrition, nutriment_name):
+    """Extrait une valeur nutritionnelle depuis la structure nutrition.aggregated_set.nutrients."""
+    if nutrition is None:
         return None
     try:
-        return nutriments[f"{nutriment_name}_100g"]
+        value = nutrition['aggregated_set']['nutrients'][nutriment_name]['value']
+        return round(value, 2) if value is not None else None
     except (TypeError, KeyError):
         return None
 
@@ -107,7 +108,7 @@ def handle(input_file_key, output_file_key):
     # On les parse ici avant les transformations pour restaurer les types attendus :
     # - images, nutriments : dicts nécessaires pour l'extraction
     # - categories_tags, countries_tags, ingredients_tags : listes → VARCHAR[] dans MotherDuck
-    for col in ['images', 'nutriments', 'categories_tags', 'countries_tags', 'ingredients_tags']:
+    for col in ['images', 'nutrition', 'categories_tags', 'countries_tags', 'ingredients_tags']:
         if col in df.columns:
             df[col] = df[col].apply(_parse_json)
 
@@ -120,9 +121,9 @@ def handle(input_file_key, output_file_key):
             for images, code in zip(df['images'], df['code'])
         ]
 
-    # nutriments: extraire depuis le dict plat {name}_100g
+    # nutrition: extraire depuis nutrition.aggregated_set.nutrients.{name}.value
     for nutriment_name, col_name in NUTRIMENTS:
-        df[col_name] = df['nutriments'].apply(
+        df[col_name] = df['nutrition'].apply(
             lambda n, name=nutriment_name: _extract_nutriment(n, name)
         )
 

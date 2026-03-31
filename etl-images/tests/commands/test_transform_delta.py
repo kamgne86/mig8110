@@ -56,13 +56,17 @@ def sample_df():
                 "packaging":    {"en": {"rev": "5"}},
             }
         }],
-        "nutriments": [{
-            "energy-kcal_100g":   539.0,
-            "fat_100g":           30.9,
-            "saturated-fat_100g": 10.6,
-            "sugars_100g":        56.3,
-            "proteins_100g":       6.3,
-            "salt_100g":           0.107,
+        "nutrition": [{
+            "aggregated_set": {
+                "nutrients": {
+                    "energy-kcal":   {"value": 539.0},
+                    "fat":           {"value": 30.9},
+                    "saturated-fat": {"value": 10.6},
+                    "sugars":        {"value": 56.3},
+                    "proteins":      {"value": 6.3},
+                    "salt":          {"value": 0.107},
+                }
+            }
         }],
     })
 
@@ -107,12 +111,16 @@ class TestExtractImageUrl:
 class TestExtractNutriment:
 
     def test_extracts_correct_value(self):
-        nutriments = {"energy-kcal_100g": 539.0, "fat_100g": 30.9}
-        assert _extract_nutriment(nutriments, "energy-kcal") == 539.0
+        nutrition = {"aggregated_set": {"nutrients": {"energy-kcal": {"value": 539.0}, "fat": {"value": 30.9}}}}
+        assert _extract_nutriment(nutrition, "energy-kcal") == 539.0
+
+    def test_rounds_to_2_decimals(self):
+        nutrition = {"aggregated_set": {"nutrients": {"fat": {"value": 30.9456789}}}}
+        assert _extract_nutriment(nutrition, "fat") == 30.95
 
     def test_returns_none_when_nutriment_missing(self):
-        nutriments = {"fat_100g": 30.9}
-        assert _extract_nutriment(nutriments, "energy-kcal") is None
+        nutrition = {"aggregated_set": {"nutrients": {"fat": {"value": 30.9}}}}
+        assert _extract_nutriment(nutrition, "energy-kcal") is None
 
     def test_returns_none_for_null(self):
         assert _extract_nutriment(None, "energy-kcal") is None
@@ -158,7 +166,7 @@ class TestTransformDelta:
         assert df["nutrition_url"].iloc[0] == "https://images.openfoodfacts.org/images/products/301/762/042/2003/nutrition_en.8.400.jpg"
 
     def test_nutriments_are_extracted(self, mock_env_vars, sample_df):
-        """Nutriment columns are populated from the flat nutriments dict."""
+        """Nutriment columns are populated from nutrition.aggregated_set.nutrients."""
         uploaded = {}
 
         def capture_upload(buf, key):
@@ -184,7 +192,7 @@ class TestTransformDelta:
             "nutriscore_grade": ["a", "unknown", "not-applicable"],
             "ecoscore_grade":   ["b", "b", "b"],
             "images":     [None, None, None],
-            "nutriments": [None, None, None],
+            "nutrition": [None, None, None],
         })
         uploaded = {}
 
@@ -212,7 +220,7 @@ class TestTransformDelta:
             "nutriscore_grade": ["a", "a", "a"],
             "ecoscore_grade":   ["a-plus", "unknown", "not-applicable"],
             "images":     [None, None, None],
-            "nutriments": [None, None, None],
+            "nutrition": [None, None, None],
         })
         uploaded = {}
 
