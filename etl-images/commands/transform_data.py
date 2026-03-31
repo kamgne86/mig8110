@@ -126,6 +126,7 @@ def handle(input_file_key, output_file_key):
     # le chargement initial et les deltas, requis pour le MERGE incrémental.
     for col in TARGET_COLUMNS:
         if col not in df.columns:
+            logging.warning(f"Column '{col}' not found in transformed data, filling with None.")
             df[col] = None
     df = df[TARGET_COLUMNS]
 

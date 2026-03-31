@@ -141,6 +141,7 @@ def handle(input_file_key, output_file_key):
     # Projection sur le schéma Silver — garantit la compatibilité avec l'initial load
     for col in TARGET_COLUMNS:
         if col not in df.columns:
+            logging.warning(f"Column '{col}' not found in transformed delta, filling with None.")
             df[col] = None
     df = df[TARGET_COLUMNS]
 
