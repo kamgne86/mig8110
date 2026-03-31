@@ -35,12 +35,14 @@ Pipeline (par fichier delta, 1 task group instance par fichier) :
     transform_delta: Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
     load_delta     : Upsert atomique dans MotherDuck (off.silver.products) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
 
-Outputs S3 (bucket: bi-dev, préfixe: off_weekly_delta_load/bronze/) :
-    {stem}.parquet             : Enregistrements bruts filtrés par pays (Bronze)
-    {stem}_filtered.parquet    : Colonnes sélectionnées
-    {stem}_valid.parquet       : Enregistrements valides
-    {stem}_invalid.parquet     : Enregistrements invalides (quarantaine)
-    {stem}_transformed.parquet : Enregistrements transformés prêts pour le chargement
+Outputs S3 (bucket: bi-dev) :
+    Fichier S3                                      Couche    Destination MotherDuck
+    ──────────────────────────────────────────────────────────────────────────────────
+    bronze/{stem}.parquet                           Bronze    —  (transit)
+    bronze/{stem}_filtered.parquet                  Bronze    —  (transit)
+    bronze/{stem}_invalid.parquet                   Bronze    —  (quarantaine)
+    silver/{stem}_valid.parquet                     Silver    —  (transit)
+    silver/{stem}_transformed.parquet               Silver    —  (silver.products)
 
 Output MotherDuck (base: off) :
     silver.products           : Table cible principale — upsert sur `code`
@@ -197,9 +199,9 @@ with dag:
                 'load_name':      f'load-delta-{ps}',
                 'raw_key':        f'{DAG_ID}/bronze/{sk}.parquet',
                 'filtered_key':   f'{DAG_ID}/bronze/{sk}_filtered.parquet',
-                'valid_key':      f'{DAG_ID}/bronze/{sk}_valid.parquet',
                 'invalid_key':    f'{DAG_ID}/bronze/{sk}_invalid.parquet',
-                'transformed_key':f'{DAG_ID}/bronze/{sk}_transformed.parquet',
+                'valid_key':      f'{DAG_ID}/silver/{sk}_valid.parquet',
+                'transformed_key':f'{DAG_ID}/silver/{sk}_transformed.parquet',
             })
         return result
 
