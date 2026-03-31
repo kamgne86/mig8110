@@ -12,7 +12,12 @@ def execute_query(sql: str, params: List[Any] = None) -> List[Dict]:
     finally:
         conn.close()
 
-def get_products_list(q: Optional[str] = None, brand: Optional[str] = None, limit: int = 500) -> List[Dict]:
+def get_products_list(
+    q: Optional[str] = None,
+    brand: Optional[str] = None,
+    ingredients: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict]:
     """Liste des produits avec filtres, plafonnée à `limit` résultats."""
     sql = f"""
         SELECT code, product_name, brands,
@@ -29,6 +34,15 @@ def get_products_list(q: Optional[str] = None, brand: Optional[str] = None, limi
     if brand:
         sql += " AND lower(brands) LIKE ?"
         params.append(f"%{brand.lower()}%")
+    if ingredients:
+        pattern = f"%{ingredients.lower()}%"
+        sql += """
+            AND (
+                lower(coalesce(ingredients_text, '')) LIKE ?
+                OR lower(coalesce(CAST(ingredients_tags AS VARCHAR), '')) LIKE ?
+            )
+        """
+        params.extend([pattern, pattern])
 
     sql += " ORDER BY product_name NULLS LAST LIMIT ?"
     params.append(limit)

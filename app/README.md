@@ -41,6 +41,7 @@ docker run -d -p 8001:8001 --env-file .env off-api
 # Recherche produits
 GET /products?q=milk                    # Tous les laits
 GET /products?q=milk&brand=kroger       # Laits Kroger seulement
+GET /products?ingredients=tomate        # Produits contenant l'ingrédient
 
 # Produit spécifique
 GET /products/0068200466583             # Détails complets

@@ -8,9 +8,10 @@ router = APIRouter(prefix="/products", tags=["products"])
 def list_products(
     q: Optional[str] = Query(None, description="Recherche par nom de produit"),
     brand: Optional[str] = Query(None, description="Filtre par marque"),
+    ingredients: Optional[str] = Query(None, description="Recherche par ingrédient"),
     limit: int = Query(500, ge=1, le=1000, description="Nombre maximum de résultats"),
 ):
-    return get_products_list(q, brand, limit)
+    return get_products_list(q, brand, ingredients, limit)
 
 @router.get("/{code}")
 def get_product(code: str):

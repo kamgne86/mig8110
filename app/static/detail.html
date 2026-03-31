@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260329_1" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -68,7 +68,7 @@
     </div>
   </div>
 
-  <script src="/static/js/utils.js"></script>
+  <script src="/static/js/utils.js?v=20260329_1"></script>
   <script>
     const API_BASE = '';  // même origine que le backend FastAPI
 
@@ -129,7 +129,8 @@
       document.getElementById('fiber').textContent     = val(p.fiber_100g, 'g');
 
       // Ingrédients : pas de champ texte libre → on parse ingredients_tags
-      document.getElementById('ingredients').textContent = parseTags(p.ingredients_tags).join(', ') || '—';
+      const ingredientsList = getIngredientsList(p);
+      document.getElementById('ingredients').textContent = ingredientsList.length ? ingredientsList.join(', ') : '—';
 
       if (p.front_url) {
         const box = document.getElementById('imageBox');

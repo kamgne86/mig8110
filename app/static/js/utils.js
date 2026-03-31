@@ -26,3 +26,51 @@ function parseTags(raw, maxItems = null) {
   if (maxItems) labels = labels.slice(0, maxItems);
   return labels;
 }
+
+const INGREDIENT_TEXT_PRIORITY = [
+  'ingredients_text',
+  'ingredients_text_fr',
+  'ingredients_text_en',
+  'ingredients_text_de',
+  'ingredients_text_es',
+  'ingredients_text_it',
+];
+
+function getFallbackIngredientText(product) {
+  if (!product || typeof product !== 'object') return null;
+
+  for (const key of INGREDIENT_TEXT_PRIORITY) {
+    const value = product[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+
+  const extraKey = Object.keys(product)
+    .filter(key => /^ingredients_text_[a-z]{2}$/.test(key))
+    .sort()
+    .find(key => {
+      const value = product[key];
+      return typeof value === 'string' && value.trim();
+    });
+
+  return extraKey ? product[extraKey] : null;
+}
+
+function splitIngredientString(value, maxItems = null) {
+  if (!value || typeof value !== 'string') return [];
+  const parts = value
+    .split(/[\n,;]+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+  return maxItems ? parts.slice(0, maxItems) : parts;
+}
+
+function getIngredientsList(product, maxItems = null) {
+  if (!product) return [];
+  const tagsList = parseTags(product.ingredients_tags, maxItems);
+  if (tagsList.length) return tagsList;
+  const text = getFallbackIngredientText(product);
+  if (!text) return [];
+  return splitIngredientString(text, maxItems);
+}
