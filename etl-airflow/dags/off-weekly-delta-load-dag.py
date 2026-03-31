@@ -111,7 +111,7 @@ FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
     "ecoscore_score|environmental_score_score", "ecoscore_grade|environmental_score_grade",
-    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutriments",
+    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutriments|nutrition",
 ])
 
 
