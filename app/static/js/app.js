@@ -9,7 +9,7 @@ const comparisonMetrics = [
 
   { label: 'Sucres', key: 'sugars_100g', unit: 'g', icon: 'candy', better: 'lower' },
 
-  { label: 'ProtÃƒÂ©ines', key: 'proteins_100g', unit: 'g', icon: 'dumbbell', better: 'higher' },
+  { label: 'Protéines', key: 'proteins_100g', unit: 'g', icon: 'dumbbell', better: 'higher' },
 
   { label: 'Sel', key: 'salt_100g', unit: 'g', icon: 'circle-dot', better: 'lower' },
 
@@ -119,7 +119,7 @@ async function fetchAndRender() {
     allProducts = await res.json();
     applyFilters();
   } catch (err) {
-    showError("Erreur API : " + err.message + "<br>VÃ©rifiez que l'API FastAPI est dÃ©marrÃ©e.");
+    showError("Erreur API : " + err.message + "<br>Vérifiez que l'API FastAPI est démarrée.");
   }
 }
 
@@ -154,12 +154,12 @@ function renderProducts(products) {
 
   if (displayable.length === 0) {
     statsDiv.style.display = 'none';
-    resultsDiv.innerHTML = '<p class="empty-msg">Aucun produit trouvÃ©.</p>';
+    resultsDiv.innerHTML = '<p class="empty-msg">Aucun produit trouvé.</p>';
     return;
   }
 
   const limitWarning = allProducts.length === 500 ? ' <em>(limite de 500 atteinte, affinez votre recherche)</em>' : '';
-  statsDiv.innerHTML = `<strong>${displayable.length} produit(s) affichÃ©(s)</strong>${allProducts.length !== displayable.length ? ` sur ${allProducts.length} rÃ©cupÃ©rÃ©s` : ''}${limitWarning}`;
+  statsDiv.innerHTML = `<strong>${displayable.length} produit(s) affiché(s)</strong>${allProducts.length !== displayable.length ? ` sur ${allProducts.length} récupérés` : ''}${limitWarning}`;
   statsDiv.style.display = 'block';
 
   resultsDiv.innerHTML = displayable.map(p => {
@@ -179,12 +179,12 @@ function renderProducts(products) {
           <h3>${escHtml(p.product_name)}</h3>
           <p>${escHtml(p.brands || 'Sans marque')}</p>
           <div class="product-meta">
-            <span>${p.energy_kcal_100g != null ? Math.round(p.energy_kcal_100g) + ' kcal' : 'â€”'}</span>
+            <span>${p.energy_kcal_100g != null ? Math.round(p.energy_kcal_100g) + ' kcal' : '—'}</span>
             ${ns ? `<span class="badge ns-${ns}">${ns.toUpperCase()}</span>` : ''}
-            ${es ? `<span class="badge eco es-${es}">Ã‰co ${es.toUpperCase()}</span>` : ''}
+            ${es ? `<span class="badge eco es-${es}">Éco ${es.toUpperCase()}</span>` : ''}
           </div>
         </div>
-        <button class="detail-btn" onclick="voirDetail('${escAttr(p.code)}')">Voir DÃ©tail</button>
+        <button class="detail-btn" onclick="voirDetail('${escAttr(p.code)}')">Voir Détail</button>
       </div>
     `;
   }).join('');
@@ -203,7 +203,7 @@ async function comparerProduits() {
   const checked = [...document.querySelectorAll('.compare-check:checked')];
 
   if (checked.length < 2) {
-    alert('SÃ©lectionnez au moins 2 produits Ã  comparer.');
+    alert('Sélectionnez au moins 2 produits à comparer.');
     return;
   }
   if (checked.length > 4) {
@@ -253,7 +253,7 @@ async function comparerProduits() {
           <i data-lucide="${f.icon}" class="nutri-icon"></i>${f.label}
         </div>
         ${vals.map(v => {
-          const display = v != null ? `${Math.round(v * 100) / 100} ${f.unit}` : 'â€”';
+          const display = v != null ? `${Math.round(v * 100) / 100} ${f.unit}` : '—';
           const isBest  = v != null && v === minVal && numVals.length > 1;
           return `<div class="compare-val-col ${isBest ? 'best-val' : ''}">${display}</div>`;
         }).join('')}
@@ -272,7 +272,7 @@ async function comparerProduits() {
 
   const ingredientRow = `
     <div class="compare-row ingredient-row">
-      <div class="compare-field-col">IngrÃ©dients</div>
+      <div class="compare-field-col">Ingrédients</div>
       ${parsedIngredients
         .map((list, index) => {
           const vitc = vitCIngredients[index];
@@ -285,7 +285,7 @@ async function comparerProduits() {
             );
           }
           if (others.length) parts.push(escHtml(others.join(', ')));
-          if (!parts.length) parts.push('â€”');
+          if (!parts.length) parts.push('—');
 
           const isBest =
             bestIngredientCount !== null &&
@@ -317,12 +317,12 @@ async function comparerProduits() {
 function buildSummary(fields, products) {
   const lines = fields.map(field => {
     const values = products.map(p => p[field.key]).filter(v => v != null);
-    if (!values.length) return `${field.label} : â€”`;
+    if (!values.length) return `${field.label} : —`;
     const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
     return `${field.label} (moyenne) : ${Math.round(avg * 100) / 100} ${field.unit}`;
   });
   const nutriAvg = computeAverageNutriScore(products);
-  lines.push(`Nutri-score (numÃ©rique) : ${nutriAvg !== null ? nutriAvg.toFixed(2) : 'â€”'}`);
+  lines.push(`Nutri-score (numérique) : ${nutriAvg !== null ? nutriAvg.toFixed(2) : '—'}`);
 
   return `
     <div class="compare-summary">
@@ -436,7 +436,7 @@ function renderSummarySection(metricStats, nutriStats, healthScores) {
 
   return `
     <div class="summary-section">
-      <h3>Aggregation</h3>
+      <h3>Agrégation</h3>
       <div class="agg-table-wrap">
         <table class="agg-table">
           <thead>
@@ -445,7 +445,7 @@ function renderSummarySection(metricStats, nutriStats, healthScores) {
               <th>Min</th>
               <th>Max</th>
               <th>Moyenne</th>
-              <th>Classement sante</th>
+              <th>Classement santé</th>
             </tr>
           </thead>
           <tbody>${rowHtml}</tbody>
