@@ -13,18 +13,19 @@ Pipeline :
     transform_data : Transforme les données : product_name, URLs d'images, nutriments à plat
     load_silver    : Charge les données transformées dans MotherDuck (off.silver)
 
-Outputs S3 (bucket: bi-dev, préfixe: off_initial_load/bronze/) :
-    data.parquet              : Snapshot brut Open Food Facts
-    data_filtered.parquet     : Snapshot filtré (colonnes sélectionnées)
-    data_valid.parquet        : Enregistrements valides
-    data_invalid.parquet      : Enregistrements invalides (quarantaine)
-    data_transformed.parquet  : Enregistrements transformés prêts pour le chargement
+Outputs S3 (bucket: bi-dev) :
+    Fichier S3                              Couche    Destination MotherDuck
+    ──────────────────────────────────────────────────────────────────────────
+    bronze/data.parquet                     Bronze    —  (transit)
+    bronze/data_filtered.parquet            Bronze    —  (bronze.products)
+    bronze/data_invalid.parquet             Bronze    —  (quarantaine)
+    silver/data_valid.parquet               Silver    —  (transit)
+    silver/data_transformed.parquet         Silver    —  (silver.products)
 
 Outputs MotherDuck (base: off) :
-    bronze.products           : Données brutes filtrées (Bronze)
-    silver.products           : Table cible principale — données transformées (Silver),
-                                source des produits alimentaires pour l'application
-    monitoring.pipeline_runs  : Métriques d'exécution (records_in, records_out, rejection_rate)
+    bronze.products          : Données brutes filtrées
+    silver.products          : Données transformées — source principale pour l'application
+    monitoring.pipeline_runs : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 import pendulum
 from airflow.models import DAG
@@ -79,9 +80,9 @@ SILVER_TABLE = "products"
 # Clés S3 préfixées par dag_id pour isoler les fichiers dans le bucket
 RAW_FILE_KEY         = f"{DAG_ID}/bronze/data.parquet"
 FILTERED_FILE_KEY    = f"{DAG_ID}/bronze/data_filtered.parquet"
-VALID_FILE_KEY       = f"{DAG_ID}/bronze/data_valid.parquet"
 INVALID_FILE_KEY     = f"{DAG_ID}/bronze/data_invalid.parquet"
-TRANSFORMED_FILE_KEY = f"{DAG_ID}/bronze/data_transformed.parquet"
+VALID_FILE_KEY       = f"{DAG_ID}/silver/data_valid.parquet"
+TRANSFORMED_FILE_KEY = f"{DAG_ID}/silver/data_transformed.parquet"
 
 # Colonnes à conserver lors du filtrage
 FILTER_COLUMNS = ",".join([
