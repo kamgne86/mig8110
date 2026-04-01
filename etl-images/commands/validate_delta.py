@@ -3,7 +3,7 @@ import logging
 import pandas as pd
 from common.s3 import S3FileHandler
 from common.monitoring import record_run
-from config.validation_rules import VALIDATION_RULES
+from config.validation_rules_delta import VALIDATION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     s3_access_key = os.environ["S3_ACCESS_KEY"]
     s3_secret_key = os.environ["S3_SECRET_KEY"]
 
-    logger.info(f"Validating data from {input_file_key}...")
+    logger.info(f"Validating delta from {input_file_key}...")
 
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
 
@@ -41,7 +41,7 @@ def handle(input_file_key, output_file_key, invalid_file_key):
     logger.info(f"Data uploaded to S3: {invalid_file_key}")
 
     record_run(
-        command="validate_data",
+        command="validate_delta",
         records_in=len(df_valid) + len(df_invalid),
         records_out=len(df_valid),
         records_rejected=len(df_invalid),
