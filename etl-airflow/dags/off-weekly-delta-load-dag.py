@@ -57,6 +57,7 @@ from airflow.models.xcom_arg import XComArg
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
+from plugins.operators.duckdb_operator import DuckDBOperator
 
 IMAGE  = "mig8110/etl-images:1.0.0"
 DAG_ID = "off_weekly_delta_load"
@@ -92,11 +93,14 @@ duckdb_env_vars = {
 }
 airflow_env_vars = {
     "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
+    "AIRFLOW_CTX_DAG_ID":     "{{ dag.dag_id }}",
 }
 
-DATABASE_NAME  = "off"
-SILVER_SCHEMA  = "silver"
-SILVER_TABLE   = "products"
+DATABASE_NAME      = "off"
+SILVER_SCHEMA      = "silver"
+SILVER_TABLE       = "products"
+MONITORING_SCHEMA  = "monitoring"
+MONITORING_TABLE   = "pipeline_runs"
 
 AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
@@ -107,6 +111,7 @@ DELTA_BASE_URL  = "https://static.openfoodfacts.org/data/delta/"
 # Colonnes à conserver lors du filtrage delta.
 # La syntaxe pipe (target|fallback) gère les champs renommés entre versions de fichiers delta :
 # si la colonne cible est absente, la colonne de secours est utilisée et renommée.
+# Note: "nutrition" est utilisé à la place de "nutriments" (présent mais vide dans les deltas récents).
 FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
@@ -118,6 +123,18 @@ FILTER_DELTA_COLUMNS = ",".join([
 with dag:
 
     start = EmptyOperator(task_id='start')
+
+    # ── 0. Schemas ───────────────────────────────────────────────────────────
+    # Crée les schémas Bronze, Silver et Monitoring dans MotherDuck si absents.
+    create_schemas = DuckDBOperator(
+        dag=dag,
+        task_id='create-schemas',
+        sql=f"""
+            CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{SILVER_SCHEMA};
+            CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{MONITORING_SCHEMA};
+        """,
+        duckdb_conn_id='duckdb_default'
+    )
 
     # ── 1. Fetch ─────────────────────────────────────────────────────────────
     # Lit index.txt depuis Open Food Facts, trie les fichiers chronologiquement
@@ -257,8 +274,8 @@ with dag:
             do_xcom_push=False,
         )
 
-        # ── validate_delta ────────────────────────────────────────────────────
-        # Applique les règles de validation (config/validation_rules_delta.py).
+        # ── validate_delta ───────────────────────────────────────────────────
+        # Applique les règles de validation delta (config/validation_rules_delta.py).
         # Les invalides sont mis en quarantaine dans {stem_key}_invalid.parquet.
         validate = CustomKubernetesPodOperator(
             dag=dag,
@@ -270,6 +287,8 @@ with dag:
                 "--input_file_key",   filtered_key,
                 "--output_file_key",  valid_key,
                 "--invalid_file_key", invalid_key,
+                "--schema_name",      MONITORING_SCHEMA,
+                "--table_name",       MONITORING_TABLE,
             ],
             env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
             do_xcom_push=False,
@@ -346,6 +365,6 @@ with dag:
     # BranchPythonOperator skipe build_file_params (et tout l'aval) quand
     # pending=[]. La dépendance XCom save_delta_file_list→build_file_params
     # est implicite (ti.xcom_pull dans _build_file_params).
-    start >> fetch_delta_index >> save_delta_file_list >> check_new_files
+    start >> create_schemas >> fetch_delta_index >> save_delta_file_list >> check_new_files
     check_new_files >> build_file_params >> process_mapped >> update_checkpoint >> end
     check_new_files >> end

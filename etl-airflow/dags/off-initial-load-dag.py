@@ -68,11 +68,14 @@ duckdb_env_vars = {
 
 airflow_env_vars = {
     "AIRFLOW_CTX_DAG_RUN_ID": "{{ run_id }}",
+    "AIRFLOW_CTX_DAG_ID":     "{{ dag.dag_id }}",
 }
 
-DATABASE_NAME  = "off"
-BRONZE_SCHEMA  = "bronze"
-SILVER_SCHEMA  = "silver"
+DATABASE_NAME      = "off"
+BRONZE_SCHEMA      = "bronze"
+SILVER_SCHEMA      = "silver"
+MONITORING_SCHEMA  = "monitoring"
+MONITORING_TABLE   = "pipeline_runs"
 
 BRONZE_TABLE = "products"
 SILVER_TABLE = "products"
@@ -96,13 +99,14 @@ with dag:
 
     start = EmptyOperator(task_id='start')
 
-    # Crée les schémas Bronze et Silver dans MotherDuck si absents.
+    # Crée les schémas Bronze, Silver et Monitoring dans MotherDuck si absents.
     create_schemas = DuckDBOperator(
         dag=dag,
         task_id='create-schemas',
         sql=f"""
             CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{BRONZE_SCHEMA};
             CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{SILVER_SCHEMA};
+            CREATE SCHEMA IF NOT EXISTS {DATABASE_NAME}.{MONITORING_SCHEMA};
         """,
         duckdb_conn_id='duckdb_default'
     )
@@ -163,6 +167,8 @@ with dag:
             "--input_file_key",   FILTERED_FILE_KEY,
             "--output_file_key",  VALID_FILE_KEY,
             "--invalid_file_key", INVALID_FILE_KEY,
+            "--schema_name",      MONITORING_SCHEMA,
+            "--table_name",       MONITORING_TABLE,
         ]
     )
 
