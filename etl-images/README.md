@@ -38,14 +38,16 @@ python run.py \
 
 ### validate_data
 
-Valide les enregistrements du parquet filtré. Les enregistrements valides et invalides sont uploadés séparément sur S3.
+Valide les enregistrements du parquet filtré. Les enregistrements valides et invalides sont uploadés séparément sur S3. Les métriques sont enregistrées dans la table de monitoring spécifiée.
 
 ```bash
 python run.py \
   --command=validate_data \
   --input_file_key=raw/openfoodfacts_filtered.parquet \
   --output_file_key=staging/openfoodfacts_valid.parquet \
-  --invalid_file_key=staging/openfoodfacts_invalid.parquet
+  --invalid_file_key=staging/openfoodfacts_invalid.parquet \
+  --schema_name=monitoring \
+  --table_name=pipeline_runs
 ```
 
 ### transform_data
@@ -120,14 +122,16 @@ python run.py \
 
 ### validate_delta
 
-Valide les enregistrements du parquet filtré delta. Utilise des règles de validation spécifiques aux deltas (`validation_rules_delta.py`), notamment la vérification de la colonne `nutrition` (au lieu de `nutriments` pour le chargement initial).
+Valide les enregistrements du parquet filtré delta. Utilise des règles de validation spécifiques aux deltas (`validation_rules_delta.py`), notamment la vérification de la colonne `nutrition` (au lieu de `nutriments` pour le chargement initial). Les métriques sont enregistrées dans la table de monitoring spécifiée.
 
 ```bash
 python run.py \
   --command=validate_delta \
   --input_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_filtered.parquet \
   --output_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_valid.parquet \
-  --invalid_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_invalid.parquet
+  --invalid_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_invalid.parquet \
+  --schema_name=monitoring \
+  --table_name=pipeline_runs
 ```
 
 ### transform_delta

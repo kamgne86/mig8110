@@ -60,7 +60,7 @@ class TestValidateData:
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
 
             uploaded_dfs = {
                 call[0][1]: call[0][0]
@@ -76,7 +76,7 @@ class TestValidateData:
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
 
             uploaded_dfs = {
                 call[0][1]: call[0][0]
@@ -92,7 +92,7 @@ class TestValidateData:
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
 
             assert mock_s3_instance.upload_dataframe.call_count == 2
             uploaded_keys = [call[0][1] for call in mock_s3_instance.upload_dataframe.call_args_list]
@@ -123,7 +123,7 @@ class TestValidateData:
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
 
-            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
 
             uploaded_dfs = {
                 call[0][1]: call[0][0]
@@ -135,4 +135,4 @@ class TestValidateData:
         """KeyError is raised when S3 environment variables are missing."""
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(KeyError):
-                handle("data.parquet", "data_valid.parquet", "data_invalid.parquet")
+                handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
