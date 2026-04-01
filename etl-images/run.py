@@ -39,9 +39,9 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
     elif command == "filter_data":
         filter_data(input_file_key, output_file_key, columns)
     elif command == "validate_data":
-        validate_data(input_file_key, output_file_key, invalid_file_key)
+        validate_data(input_file_key, output_file_key, invalid_file_key, schema_name, table_name)
     elif command == "validate_delta":
-        validate_delta(input_file_key, output_file_key, invalid_file_key)
+        validate_delta(input_file_key, output_file_key, invalid_file_key, schema_name, table_name)
     elif command == "transform_data":
         transform_data(input_file_key, output_file_key)
     elif command == "load_data":

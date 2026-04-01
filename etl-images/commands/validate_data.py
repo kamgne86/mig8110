@@ -8,7 +8,7 @@ from config.validation_rules import VALIDATION_RULES
 logger = logging.getLogger(__name__)
 
 
-def handle(input_file_key, output_file_key, invalid_file_key):
+def handle(input_file_key, output_file_key, invalid_file_key, schema_name, table_name):
     s3_bucket = os.environ["S3_BUCKET"]
     s3_endpoint = os.environ["S3_ENDPOINT"]
     s3_access_key = os.environ["S3_ACCESS_KEY"]
@@ -45,4 +45,6 @@ def handle(input_file_key, output_file_key, invalid_file_key):
         records_in=len(df_valid) + len(df_invalid),
         records_out=len(df_valid),
         records_rejected=len(df_invalid),
+        monitoring_schema=schema_name,
+        monitoring_table=table_name,
     )

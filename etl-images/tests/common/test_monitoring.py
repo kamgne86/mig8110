@@ -18,7 +18,7 @@ class TestMonitoring:
 
     def test_record_run_success(self, mock_env_vars):
         """Test that metrics are inserted into the monitoring table when in Airflow context."""
-        with patch.dict(os.environ, {"AIRFLOW_CTX_DAG_RUN_ID": "run_20260327"}), \
+        with patch.dict(os.environ, {"AIRFLOW_CTX_DAG_RUN_ID": "run_20260327", "AIRFLOW_CTX_DAG_ID": "off_weekly_delta_load"}), \
              patch("common.monitoring.duckdb.connect") as mock_connect:
             mock_con = Mock()
             mock_connect.return_value = mock_con
@@ -31,15 +31,16 @@ class TestMonitoring:
             assert any("CREATE SCHEMA IF NOT EXISTS monitoring" in s for s in sql_calls)
             assert any("CREATE TABLE IF NOT EXISTS monitoring.pipeline_runs" in s for s in sql_calls)
 
-            execute_args = mock_con.execute.call_args[0]
-            assert "INSERT INTO monitoring.pipeline_runs" in execute_args[0]
-            params = execute_args[1]
+            insert_args = mock_con.execute.call_args_list[-1][0]
+            assert "INSERT INTO monitoring.pipeline_runs" in insert_args[0]
+            params = insert_args[1]
             assert params[0] == "run_20260327"
-            assert params[1] == "validate_data"
-            assert params[2] == 1000
-            assert params[3] == 900
-            assert params[4] == 100
-            assert params[5] == 10.0
+            assert params[1] == "off_weekly_delta_load"
+            assert params[2] == "validate_data"
+            assert params[3] == 1000
+            assert params[4] == 900
+            assert params[5] == 100
+            assert params[6] == 10.0
 
             mock_con.close.assert_called_once()
 
@@ -63,8 +64,8 @@ class TestMonitoring:
 
             record_run("validate_data", records_in=200, records_out=150, records_rejected=50)
 
-            params = mock_con.execute.call_args[0][1]
-            assert params[5] == 25.0  # 50/200 * 100
+            params = mock_con.execute.call_args_list[-1][0][1]
+            assert params[6] == 25.0  # 50/200 * 100
 
     def test_zero_records_in(self, mock_env_vars):
         """Test that rejection rate is 0.0 when records_in is 0."""
@@ -75,8 +76,8 @@ class TestMonitoring:
 
             record_run("validate_data", records_in=0, records_out=0, records_rejected=0)
 
-            params = mock_con.execute.call_args[0][1]
-            assert params[5] == 0.0
+            params = mock_con.execute.call_args_list[-1][0][1]
+            assert params[6] == 0.0
 
     def test_missing_duckdb_env_var(self):
         """KeyError is raised when DuckDB env vars are missing but Airflow context is set."""
