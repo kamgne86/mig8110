@@ -31,7 +31,7 @@ Architecture — Mapped Task Groups (Airflow 2.5+) :
 Pipeline (par fichier delta, 1 task group instance par fichier) :
     extract_delta  : Télécharge le fichier .json.gz, filtre par pays, uploade en parquet (Bronze)
     filter_delta   : Sélectionne les colonnes utiles avec fallback pour les champs renommés
-    validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
+    validate_delta : Sépare les enregistrements valides des invalides selon les règles définies
     transform_delta: Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
     load_delta     : Upsert atomique dans MotherDuck (off.silver.products) — DELETE + INSERT dans une transaction (ROLLBACK si INSERT échoue)
 
@@ -111,7 +111,7 @@ FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
     "ecoscore_score|environmental_score_score", "ecoscore_grade|environmental_score_grade",
-    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutriments",
+    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutrition",
 ])
 
 
@@ -194,7 +194,7 @@ with dag:
                 'stem':           s,
                 'extract_name':   f'extract-delta-{ps}',
                 'filter_name':    f'filter-delta-{ps}',
-                'validate_name':  f'validate-data-{ps}',
+                'validate_name':  f'validate-delta-{ps}',
                 'transform_name': f'transform-delta-{ps}',
                 'load_name':      f'load-delta-{ps}',
                 'raw_key':        f'{DAG_ID}/bronze/{sk}.parquet',
@@ -257,16 +257,16 @@ with dag:
             do_xcom_push=False,
         )
 
-        # ── validate_data ────────────────────────────────────────────────────
-        # Applique les règles de validation (config/validation_rules.py).
+        # ── validate_delta ────────────────────────────────────────────────────
+        # Applique les règles de validation (config/validation_rules_delta.py).
         # Les invalides sont mis en quarantaine dans {stem_key}_invalid.parquet.
         validate = CustomKubernetesPodOperator(
             dag=dag,
-            task_id='validate_data',
+            task_id='validate_delta',
             name=validate_name,
             image=IMAGE,
             arguments=[
-                "--command",          "validate_data",
+                "--command",          "validate_delta",
                 "--input_file_key",   filtered_key,
                 "--output_file_key",  valid_key,
                 "--invalid_file_key", invalid_key,
