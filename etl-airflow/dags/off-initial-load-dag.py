@@ -6,26 +6,34 @@ Ce DAG est déclenché manuellement (schedule_interval=None) et doit être exéc
 fois pour initialiser les données, ou relancé pour un rechargement complet.
 
 Pipeline :
-    extract_data   : Télécharge le snapshot parquet depuis GitHub et le dépose sur S3 (Bronze)
-    filter_data    : Sélectionne les colonnes utiles pour réduire l'empreinte mémoire
-    load_bronze    : Charge le parquet filtré dans MotherDuck (off.bronze)
-    validate_data  : Sépare les enregistrements valides des invalides selon les règles définies
-    transform_data : Transforme les données : product_name, URLs d'images, nutriments à plat
-    load_silver    : Charge les données transformées dans MotherDuck (off.silver)
+    extract_data         : Télécharge le snapshot parquet depuis GitHub et le dépose sur S3 (Bronze)
+    filter_data          : Sélectionne les colonnes utiles pour réduire l'empreinte mémoire
+    load_bronze          : Charge le parquet filtré dans MotherDuck (off.bronze)
+    validate_data        : Sépare les enregistrements valides des invalides selon les règles définies
+    transform_data       : Transforme les données : product_name, URLs d'images, nutriments à plat
+    normalize_categories : Normalise categories_tags → 3 tables (products, categories, product_categories)
+    load_products        : Charge silver.products dans MotherDuck
+    load_categories      : Charge silver.categories dans MotherDuck
+    load_product_categories : Charge silver.product_categories dans MotherDuck
 
 Outputs S3 (bucket: bi-dev) :
-    Fichier S3                              Couche    Destination MotherDuck
-    ──────────────────────────────────────────────────────────────────────────
-    bronze/data.parquet                     Bronze    —  (transit)
-    bronze/data_filtered.parquet            Bronze    —  (bronze.products)
-    bronze/data_invalid.parquet             Bronze    —  (quarantaine)
-    silver/data_valid.parquet               Silver    —  (transit)
-    silver/data_transformed.parquet         Silver    —  (silver.products)
+    Fichier S3                                  Couche    Destination MotherDuck
+    ──────────────────────────────────────────────────────────────────────────────
+    bronze/data.parquet                         Bronze    —  (transit)
+    bronze/data_filtered.parquet                Bronze    —  (bronze.products)
+    bronze/data_invalid.parquet                 Bronze    —  (quarantaine)
+    silver/data_valid.parquet                   Silver    —  (transit)
+    silver/data_transformed.parquet             Silver    —  (transit)
+    silver/products.parquet                     Silver    —  (silver.products)
+    silver/categories.parquet                   Silver    —  (silver.categories)
+    silver/product_categories.parquet           Silver    —  (silver.product_categories)
 
 Outputs MotherDuck (base: off) :
-    bronze.products          : Données brutes filtrées
-    silver.products          : Données transformées — source principale pour l'application
-    monitoring.pipeline_runs : Métriques d'exécution (records_in, records_out, rejection_rate)
+    bronze.products              : Données brutes filtrées
+    silver.products              : Produits transformés sans categories_tags
+    silver.categories            : Référentiel OFF (category_id, category_name, parent_category_id)
+    silver.product_categories    : Table de jonction Many-to-Many (code, category_id)
+    monitoring.pipeline_runs     : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 import pendulum
 from airflow.models import DAG
@@ -77,15 +85,20 @@ SILVER_SCHEMA      = "silver"
 MONITORING_SCHEMA  = "monitoring"
 MONITORING_TABLE   = "pipeline_runs"
 
-BRONZE_TABLE = "products"
-SILVER_TABLE = "products"
+BRONZE_TABLE             = "products"
+SILVER_TABLE             = "products"
+CATEGORIES_TABLE         = "categories"
+PRODUCT_CATEGORIES_TABLE = "product_categories"
 
 # Clés S3 préfixées par dag_id pour isoler les fichiers dans le bucket
-RAW_FILE_KEY         = f"{DAG_ID}/bronze/data.parquet"
-FILTERED_FILE_KEY    = f"{DAG_ID}/bronze/data_filtered.parquet"
-INVALID_FILE_KEY     = f"{DAG_ID}/bronze/data_invalid.parquet"
-VALID_FILE_KEY       = f"{DAG_ID}/silver/data_valid.parquet"
-TRANSFORMED_FILE_KEY = f"{DAG_ID}/silver/data_transformed.parquet"
+RAW_FILE_KEY                  = f"{DAG_ID}/bronze/data.parquet"
+FILTERED_FILE_KEY             = f"{DAG_ID}/bronze/data_filtered.parquet"
+INVALID_FILE_KEY              = f"{DAG_ID}/bronze/data_invalid.parquet"
+VALID_FILE_KEY                = f"{DAG_ID}/silver/data_valid.parquet"
+TRANSFORMED_FILE_KEY          = f"{DAG_ID}/silver/data_transformed.parquet"
+PRODUCTS_FILE_KEY             = f"{DAG_ID}/silver/products.parquet"
+CATEGORIES_FILE_KEY           = f"{DAG_ID}/silver/categories.parquet"
+PRODUCT_CATEGORIES_FILE_KEY   = f"{DAG_ID}/silver/product_categories.parquet"
 
 # Colonnes à conserver lors du filtrage
 FILTER_COLUMNS = ",".join([
@@ -187,21 +200,68 @@ with dag:
         ]
     )
 
-    # Charge les données transformées dans silver.products (couche Silver).
-    # Cette table constitue la source principale pour les traitements analytiques futurs.
-    load_silver = CustomKubernetesPodOperator(
+    # Normalise categories_tags en 3 tables relationnelles (Silver).
+    # Produit products.parquet (sans categories_tags), categories.parquet
+    # et product_categories.parquet (table de jonction Many-to-Many).
+    normalize_categories = CustomKubernetesPodOperator(
         dag=dag,
-        name='load-silver',
+        name='normalize-categories',
+        image=IMAGE,
+        env_vars={**s3_env_vars},
+        arguments=[
+            "--command",                       "normalize_categories",
+            "--input_file_key",                TRANSFORMED_FILE_KEY,
+            "--products_output_key",           PRODUCTS_FILE_KEY,
+            "--categories_output_key",         CATEGORIES_FILE_KEY,
+            "--product_categories_output_key", PRODUCT_CATEGORIES_FILE_KEY,
+        ]
+    )
+
+    # Charge silver.products dans MotherDuck (produits sans categories_tags).
+    load_products = CustomKubernetesPodOperator(
+        dag=dag,
+        name='load-products',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars},
         arguments=[
-            "--command", "load_data",
-            "--input_file_key", TRANSFORMED_FILE_KEY,
-            "--table_name", SILVER_TABLE,
-            "--schema_name", f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+            "--command",        "load_data",
+            "--input_file_key", PRODUCTS_FILE_KEY,
+            "--table_name",     SILVER_TABLE,
+            "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+        ]
+    )
+
+    # Charge silver.categories dans MotherDuck (référentiel OFF avec hiérarchie).
+    load_categories = CustomKubernetesPodOperator(
+        dag=dag,
+        name='load-categories',
+        image=IMAGE,
+        env_vars={**s3_env_vars, **duckdb_env_vars},
+        arguments=[
+            "--command",        "load_data",
+            "--input_file_key", CATEGORIES_FILE_KEY,
+            "--table_name",     CATEGORIES_TABLE,
+            "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+        ]
+    )
+
+    # Charge silver.product_categories dans MotherDuck (table de jonction Many-to-Many).
+    load_product_categories = CustomKubernetesPodOperator(
+        dag=dag,
+        name='load-product-categories',
+        image=IMAGE,
+        env_vars={**s3_env_vars, **duckdb_env_vars},
+        arguments=[
+            "--command",        "load_data",
+            "--input_file_key", PRODUCT_CATEGORIES_FILE_KEY,
+            "--table_name",     PRODUCT_CATEGORIES_TABLE,
+            "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
         ]
     )
 
     end = EmptyOperator(task_id='end')
 
-    start >> create_schemas >> extract_data >> filter_data >> load_bronze >> validate_data >> transform_data >> load_silver >> end
+    start >> create_schemas >> extract_data >> filter_data >> load_bronze >> validate_data >> transform_data >> normalize_categories
+    normalize_categories >> load_products >> end
+    normalize_categories >> load_categories >> end
+    normalize_categories >> load_product_categories >> end
