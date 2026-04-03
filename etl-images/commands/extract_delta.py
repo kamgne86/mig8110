@@ -3,7 +3,6 @@ import gzip
 import json
 import logging
 import tempfile
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
@@ -75,18 +74,45 @@ def _batch_to_table(batch, schema):
     return pa.table(dict(zip(schema.names, arrays)), schema=schema)
 
 
-def _download_and_filter(session, url, country):
+def _parse_keep_columns(columns):
+    """Retourne un set de noms de colonnes à conserver depuis la chaîne --columns.
+
+    Supporte la syntaxe pipe (primary|fallback) utilisée par filter_delta :
+      "code,brands,ecoscore_score|environmental_score_score"
+      → {"code", "brands", "ecoscore_score", "environmental_score_score"}
+
+    Retourne None si columns est None (= garder tout).
+    """
+    if not columns:
+        return None
+    keep = set()
+    for entry in columns.split(","):
+        for col in entry.split("|"):
+            col = col.strip()
+            if col:
+                keep.add(col)
+    return keep
+
+
+def _download_and_filter(session, url, country, columns=None):
     """Télécharge, filtre par pays et écrit en parquet par batches.
 
     Stratégie mémoire :
       1. Téléchargement en chunks de 50 MB → fichier tmp .gz
       2. Décompression ligne par ligne → jamais tout en RAM
-      3. Écriture parquet par batch de BATCH_SIZE records
-      4. Schéma fixé sur le premier batch, tous les suivants alignés dessus
+      3. Passe 1 : collecte uniquement les colonnes utiles (keep_columns)
+      4. Passe 2 : écriture parquet par batch avec schéma fixe
+
+    Args:
+        columns: chaîne comma-séparée des colonnes à conserver (syntaxe pipe supportée).
+                 None = garder toutes les colonnes.
 
     Returns:
         (out_path, total_records)
     """
+    keep_columns = _parse_keep_columns(columns)
+    if keep_columns:
+        logger.info(f"Column filter active: keeping {len(keep_columns)} columns.")
     head = session.head(url, timeout=30)
     head.raise_for_status()
     total_size = int(head.headers["Content-Length"])
@@ -128,6 +154,8 @@ def _download_and_filter(session, url, country):
                 record = json.loads(line)
                 if not _matches_country(record.get("countries_tags"), country):
                     continue
+                if keep_columns:
+                    record = {k: v for k, v in record.items() if k in keep_columns}
                 serialized = _serialize_record(record)
                 all_columns.update(serialized.keys())
                 canada_lines.append(serialized)
@@ -161,7 +189,7 @@ def _download_and_filter(session, url, country):
         os.unlink(tmp_path)
 
 
-def handle(filename, output_file_key, base_url, country="canada"):
+def handle(filename, output_file_key, base_url, country="canada", columns=None):
     """Télécharge un fichier delta, filtre par pays et uploade en parquet sur S3."""
     s3_bucket    = os.environ["S3_BUCKET"]
     s3_endpoint  = os.environ["S3_ENDPOINT"]
@@ -174,7 +202,7 @@ def handle(filename, output_file_key, base_url, country="canada"):
     url = urljoin(base_url, filename)
     logger.info(f"Processing delta file: {filename}")
 
-    parquet_path, total_records = _download_and_filter(session, url, country)
+    parquet_path, total_records = _download_and_filter(session, url, country, columns)
 
     if total_records == 0:
         logger.warning(f"No {country} records found in {filename}, uploading empty parquet.")

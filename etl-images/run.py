@@ -52,7 +52,7 @@ def main(command, output_file_key, url, input_file_key, invalid_file_key, table_
     elif command == "load_data":
         load_data(input_file_key, table_name, schema_name)
     elif command == "extract_delta":
-        extract_delta(filename, output_file_key, base_url, country)
+        extract_delta(filename, output_file_key, base_url, country, columns)
     elif command == "filter_delta":
         filter_delta(input_file_key, output_file_key, columns)
     elif command == "load_delta":
