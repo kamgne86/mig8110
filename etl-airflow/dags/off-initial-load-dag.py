@@ -8,7 +8,7 @@ fois pour initialiser les données, ou relancé pour un rechargement complet.
 Pipeline :
     extract_data         : Télécharge le snapshot parquet depuis GitHub et le dépose sur S3 (Bronze)
     filter_data          : Sélectionne les colonnes utiles pour réduire l'empreinte mémoire
-    load_bronze          : Charge le parquet filtré dans MotherDuck (off.bronze)
+    load_bronze          : Charge le parquet brut (toutes colonnes) dans MotherDuck (off.bronze) — en parallèle avec filter_data
     validate_data        : Sépare les enregistrements valides des invalides selon les règles définies
     transform_data       : Transforme les données : product_name, URLs d'images, nutriments à plat
     normalize_categories : Normalise categories_tags → 3 tables (products, categories, product_categories)
@@ -19,8 +19,8 @@ Pipeline :
 Outputs S3 (bucket: bi-dev) :
     Fichier S3                                  Couche    Destination MotherDuck
     ──────────────────────────────────────────────────────────────────────────────
-    bronze/data.parquet                         Bronze    —  (transit)
-    bronze/data_filtered.parquet                Bronze    —  (bronze.products)
+    bronze/data.parquet                         Bronze    —  (bronze.products)
+    bronze/data_filtered.parquet                Bronze    —  (transit)
     bronze/data_invalid.parquet                 Bronze    —  (quarantaine)
     silver/data_valid.parquet                   Silver    —  (transit)
     silver/data_transformed.parquet             Silver    —  (transit)
@@ -153,7 +153,9 @@ with dag:
         ]
     )
 
-    # Charge le parquet filtré dans MotherDuck (couche Bronze).
+    # Charge le parquet brut dans MotherDuck (couche Bronze).
+    # Toutes les colonnes sont conservées pour permettre l'exploration
+    # et l'ajout futur de colonnes au pipeline Silver sans re-téléchargement.
     load_bronze = CustomKubernetesPodOperator(
         dag=dag,
         name='load-bronze',
@@ -161,7 +163,7 @@ with dag:
         env_vars={**s3_env_vars, **duckdb_env_vars},
         arguments=[
             "--command", "load_data",
-            "--input_file_key", FILTERED_FILE_KEY,
+            "--input_file_key", RAW_FILE_KEY,
             "--table_name", BRONZE_TABLE,
             "--schema_name", f"{DATABASE_NAME}.{BRONZE_SCHEMA}",
         ]
@@ -261,7 +263,9 @@ with dag:
 
     end = EmptyOperator(task_id='end')
 
-    start >> create_schemas >> extract_data >> filter_data >> load_bronze >> validate_data >> transform_data >> normalize_categories
+    start >> create_schemas >> extract_data
+    extract_data >> load_bronze >> end
+    extract_data >> filter_data >> validate_data >> transform_data >> normalize_categories
     normalize_categories >> load_products >> end
     normalize_categories >> load_categories >> end
     normalize_categories >> load_product_categories >> end
