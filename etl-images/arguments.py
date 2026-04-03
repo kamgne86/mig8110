@@ -91,3 +91,10 @@ product_categories_output_key = click.option(
     default=None,
     help='Output file key in S3 for the product_categories junction parquet'
 )
+
+key_column = click.option(
+    '--key_column',
+    type=str,
+    default='code',
+    help='Column used as key for the DELETE + INSERT upsert in load_delta (default: code)'
+)
