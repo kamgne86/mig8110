@@ -87,6 +87,22 @@ class TestDownloadAndFilter:
         finally:
             os.unlink(path)
 
+    def test_mixed_type_scalar_columns_cast_to_string(self):
+        """Columns with mixed scalar types (e.g. int and str) are cast to string across batches."""
+        records = [
+            {"code": "1", "countries_tags": ["en:canada"], "max_imgid": 3},
+            {"code": "2", "countries_tags": ["en:canada"], "max_imgid": "7"},
+        ]
+        session = self._mock_session(self._make_gzip(records))
+
+        path, count = _download_and_filter(session, BASE_URL + FILENAME, "canada")
+        try:
+            df = pd.read_parquet(path)
+            assert df["max_imgid"].iloc[0] == "3"
+            assert df["max_imgid"].iloc[1] == "7"
+        finally:
+            os.unlink(path)
+
     def test_complex_columns_serialized_to_json_strings(self):
         """Complex columns (lists, dicts) are serialized to JSON strings."""
         records = [

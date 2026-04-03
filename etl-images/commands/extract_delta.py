@@ -50,6 +50,20 @@ def _download_and_filter(session, url, country):
     out_path = out_tmp.name
     out_tmp.close()
 
+    def _flush_batch(batches, writer):
+        df_batch = pd.DataFrame(batches)
+        for col in df_batch.columns:
+            if df_batch[col].dtype == object:
+                df_batch[col] = df_batch[col].apply(
+                    lambda x: None if (x is None or (isinstance(x, float) and x != x))
+                    else str(x)
+                )
+        table = pa.Table.from_pandas(df_batch, preserve_index=False)
+        if writer is None:
+            writer = pq.ParquetWriter(out_path, table.schema)
+        writer.write_table(table)
+        return writer
+
     try:
         batches = []
         writer = None
@@ -71,20 +85,12 @@ def _download_and_filter(session, url, country):
                 batches.append(record)
 
                 if len(batches) >= BATCH_SIZE:
-                    df_batch = pd.DataFrame(batches)
-                    table = pa.Table.from_pandas(df_batch, preserve_index=False)
-                    if writer is None:
-                        writer = pq.ParquetWriter(out_path, table.schema)
-                    writer.write_table(table)
+                    writer = _flush_batch(batches, writer)
                     total_records += len(batches)
                     batches.clear()
 
             if batches:
-                df_batch = pd.DataFrame(batches)
-                table = pa.Table.from_pandas(df_batch, preserve_index=False)
-                if writer is None:
-                    writer = pq.ParquetWriter(out_path, table.schema)
-                writer.write_table(table)
+                writer = _flush_batch(batches, writer)
                 total_records += len(batches)
 
         if writer:
