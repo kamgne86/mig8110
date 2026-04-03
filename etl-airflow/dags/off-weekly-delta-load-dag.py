@@ -386,17 +386,18 @@ with dag:
         )
 
         # ── load_categories ──────────────────────────────────────────────────
-        # Insert silver.categories (référentiel OFF — clé = category_id, pas code).
+        # Upsert silver.categories — DELETE + INSERT par category_name.
         load_categories = CustomKubernetesPodOperator(
             dag=dag,
             task_id='load_categories',
             name=load_categories_name,
             image=IMAGE,
             arguments=[
-                "--command",        "load_data",
+                "--command",        "load_delta",
                 "--input_file_key", categories_key,
                 "--table_name",     CATEGORIES_TABLE,
                 "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+                "--key_column",     "category_name",
             ],
             env_vars={**s3_env_vars, **duckdb_env_vars},
             container_resources=RESOURCES_LIGHT,
