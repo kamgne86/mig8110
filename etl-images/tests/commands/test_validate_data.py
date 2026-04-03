@@ -131,6 +131,31 @@ class TestValidateData:
             }
             assert len(uploaded_dfs["data_invalid.parquet"]) == 0
 
+    def test_null_categories_tags_rejected(self, mock_env_vars):
+        """Records with null categories_tags go to invalid file."""
+        nutriments = [{"name": "energy-kcal", "100g": 100.0}]
+        df = pd.DataFrame({
+            "code":            ["111", "222"],
+            "product_name":    [[{"lang": "main", "text": "Product A"}], [{"lang": "main", "text": "Product B"}]],
+            "nutriments":      [nutriments, nutriments],
+            "categories_tags": [["en:beverages"], None],
+        })
+
+        with patch("commands.validate_data.S3FileHandler") as mock_s3, \
+             patch("commands.validate_data.record_run"):
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
+
+            uploaded_dfs = {
+                call[0][1]: call[0][0]
+                for call in mock_s3_instance.upload_dataframe.call_args_list
+            }
+            assert list(uploaded_dfs["data_valid.parquet"]["code"]) == ["111"]
+            assert list(uploaded_dfs["data_invalid.parquet"]["code"]) == ["222"]
+
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""
         with patch.dict(os.environ, {}, clear=True):
