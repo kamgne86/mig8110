@@ -284,6 +284,7 @@ with dag:
                 "--filename",        stem,
                 "--base_url",        DELTA_BASE_URL,
                 "--output_file_key", raw_key,
+                "--columns",         FILTER_DELTA_COLUMNS,
             ],
             env_vars={**s3_env_vars, **airflow_env_vars},
             container_resources=RESOURCES_HEAVY,
@@ -446,12 +447,13 @@ with dag:
     )
 
     # ── 7. Fin ───────────────────────────────────────────────────────────────
-    # trigger_rule ALL_DONE : s'exécute quelle que soit la branche prise
-    # (build_file_params → pipeline_per_file → update_checkpoint en vert,
-    #  ou skip direct en rose).
+    # trigger_rule NONE_FAILED_MIN_ONE_SUCCESS :
+    #   - Pipeline exécuté avec échec → end échoue → DAG en rouge
+    #   - Aucun nouveau fichier (skip direct) → tâches en skipped, pas failed
+    #     → end passe quand même (skipped ≠ failed)
     end = EmptyOperator(
         task_id='end',
-        trigger_rule='all_done',
+        trigger_rule='none_failed_min_one_success',
         dag=dag,
     )
 
