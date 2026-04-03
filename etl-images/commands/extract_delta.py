@@ -4,6 +4,8 @@ import json
 import logging
 import tempfile
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 from urllib.parse import urljoin
 from common.s3 import S3FileHandler
@@ -11,6 +13,7 @@ from common.s3 import S3FileHandler
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB
+BATCH_SIZE = 500
 
 
 def _matches_country(tags, country):
@@ -23,6 +26,9 @@ def _download_and_filter(session, url, country):
 
     Range requests ensure that a retry only re-downloads the failed chunk
     rather than restarting the entire file from the beginning.
+
+    Records are written to a parquet file in batches of BATCH_SIZE to keep
+    memory usage constant regardless of the file size.
     """
     head = session.head(url, timeout=30)
     head.raise_for_status()
@@ -40,16 +46,52 @@ def _download_and_filter(session, url, country):
             downloaded += len(resp.content)
             logger.info(f"  {downloaded / total_size * 100:.1f}% ({downloaded // 1024 // 1024} MB / {total_size // 1024 // 1024} MB)")
 
+    out_tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+    out_path = out_tmp.name
+    out_tmp.close()
+
     try:
-        records = []
+        batches = []
+        writer = None
+        total_records = 0
+
         with gzip.open(tmp_path, "rt", encoding="utf-8") as gz:
             for line in gz:
                 line = line.strip()
-                if line:
-                    record = json.loads(line)
-                    if _matches_country(record.get("countries_tags"), country):
-                        records.append(record)
-        return records
+                if not line:
+                    continue
+                record = json.loads(line)
+                if not _matches_country(record.get("countries_tags"), country):
+                    continue
+
+                for key in record:
+                    if isinstance(record[key], (list, dict)):
+                        record[key] = json.dumps(record[key], ensure_ascii=False)
+
+                batches.append(record)
+
+                if len(batches) >= BATCH_SIZE:
+                    df_batch = pd.DataFrame(batches)
+                    table = pa.Table.from_pandas(df_batch, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(out_path, table.schema)
+                    writer.write_table(table)
+                    total_records += len(batches)
+                    batches.clear()
+
+            if batches:
+                df_batch = pd.DataFrame(batches)
+                table = pa.Table.from_pandas(df_batch, preserve_index=False)
+                if writer is None:
+                    writer = pq.ParquetWriter(out_path, table.schema)
+                writer.write_table(table)
+                total_records += len(batches)
+
+        if writer:
+            writer.close()
+
+        logger.info(f"Found {total_records} {country} records.")
+        return out_path, total_records
     finally:
         os.unlink(tmp_path)
 
@@ -77,25 +119,16 @@ def handle(filename, output_file_key, base_url, country="canada"):
     url = urljoin(base_url, filename)
     logger.info(f"Processing delta file: {filename}")
 
-    records = _download_and_filter(session, url, country)
+    parquet_path, total_records = _download_and_filter(session, url, country)
 
-    if not records:
+    if total_records == 0:
         logger.warning(f"No {country} records found in {filename}, uploading empty parquet.")
 
-    logger.info(f"Found {len(records)} {country} records in {filename}.")
-
-    df = pd.DataFrame(records)
-
-    # Serialize object columns to strings for parquet compatibility.
-    # Delta files contain mixed-type columns (e.g. int/str in the same column)
-    # that PyArrow cannot infer — converting to string avoids type conflicts.
-    for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else (None if (x is None or (isinstance(x, float) and x != x)) else str(x))
-            )
-
     s3_handler = S3FileHandler(s3_bucket, s3_endpoint, s3_access_key, s3_secret_key)
-    s3_handler.upload_dataframe(df, output_file_key)
+    try:
+        with open(parquet_path, "rb") as f:
+            s3_handler.upload_from_memory(f, output_file_key)
+    finally:
+        os.unlink(parquet_path)
 
-    logger.info(f"Uploaded {output_file_key} ({len(df)} records).")
+    logger.info(f"Uploaded {output_file_key} ({total_records} records).")
