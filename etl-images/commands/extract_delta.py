@@ -21,19 +21,79 @@ def _matches_country(tags, country):
     return isinstance(tags, list) and any(country.lower() in tag.lower() for tag in tags)
 
 
+def _serialize_record(record):
+    """Convertit toutes les valeurs d'un record en types simples (str, int, float, None).
+
+    - lists / dicts  → JSON string
+    - None / NaN     → None
+    - tout le reste  → str
+    Garantit qu'aucune colonne ne peut avoir des types mixtes entre records.
+    """
+    out = {}
+    for key, val in record.items():
+        if val is None:
+            out[key] = None
+        elif isinstance(val, (list, dict)):
+            out[key] = json.dumps(val, ensure_ascii=False)
+        elif isinstance(val, float):
+            out[key] = None if val != val else val   # NaN → None
+        elif isinstance(val, (int, bool)):
+            out[key] = val
+        else:
+            out[key] = str(val)
+    return out
+
+
+def _build_schema(all_columns):
+    """Construit un schéma PyArrow fixe : toutes les colonnes en large_string.
+
+    Utiliser exclusivement large_string évite tout conflit de type entre batches
+    (int64 vs double vs large_string pour la même colonne selon le record).
+    Le casting vers les vrais types numériques se fait en aval dans transform_delta.
+    """
+    return pa.schema([pa.field(col, pa.large_utf8()) for col in sorted(all_columns)])
+
+
+def _batch_to_table(batch, schema):
+    """Convertit un batch de records en pa.Table aligné sur le schéma fixe.
+
+    - Colonnes manquantes dans ce batch → remplies de None
+    - Colonnes en trop (absentes du schéma) → ignorées
+    - Toutes les valeurs castées en str pour correspondre à large_string
+    """
+    # Aligner les colonnes sur le schéma
+    aligned = {col: [] for col in schema.names}
+    for record in batch:
+        for col in schema.names:
+            val = record.get(col)
+            if val is None:
+                aligned[col].append(None)
+            else:
+                aligned[col].append(str(val))
+
+    arrays = [pa.array(aligned[col], type=pa.large_utf8()) for col in schema.names]
+    return pa.table(dict(zip(schema.names, arrays)), schema=schema)
+
+
 def _download_and_filter(session, url, country):
-    """Download a gzipped delta file in 50 MB chunks, decompress, and filter by country.
+    """Télécharge, filtre par pays et écrit en parquet par batches.
 
-    Range requests ensure that a retry only re-downloads the failed chunk
-    rather than restarting the entire file from the beginning.
+    Stratégie mémoire :
+      1. Téléchargement en chunks de 50 MB → fichier tmp .gz
+      2. Décompression ligne par ligne → jamais tout en RAM
+      3. Écriture parquet par batch de BATCH_SIZE records
+      4. Schéma fixé sur le premier batch, tous les suivants alignés dessus
 
-    Records are written to a parquet file in batches of BATCH_SIZE to keep
-    memory usage constant regardless of the file size.
+    Returns:
+        (out_path, total_records)
     """
     head = session.head(url, timeout=30)
     head.raise_for_status()
     total_size = int(head.headers["Content-Length"])
-    logger.info(f"Downloading {url} ({total_size / 1024 / 1024:.0f} MB) in {CHUNK_SIZE // 1024 // 1024} MB chunks...")
+    logger.info(
+        f"Downloading {url} ({total_size / 1024 / 1024:.0f} MB) "
+        f"in {CHUNK_SIZE // 1024 // 1024} MB chunks..."
+    )
 
     with tempfile.NamedTemporaryFile(suffix=".gz", delete=False) as tmp:
         tmp_path = tmp.name
@@ -44,30 +104,21 @@ def _download_and_filter(session, url, country):
             resp.raise_for_status()
             tmp.write(resp.content)
             downloaded += len(resp.content)
-            logger.info(f"  {downloaded / total_size * 100:.1f}% ({downloaded // 1024 // 1024} MB / {total_size // 1024 // 1024} MB)")
+            logger.info(
+                f"  {downloaded / total_size * 100:.1f}% "
+                f"({downloaded // 1024 // 1024} MB / {total_size // 1024 // 1024} MB)"
+            )
 
     out_tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
     out_path = out_tmp.name
     out_tmp.close()
 
-    def _flush_batch(batches, writer):
-        df_batch = pd.DataFrame(batches)
-        for col in df_batch.columns:
-            if df_batch[col].dtype == object:
-                df_batch[col] = df_batch[col].apply(
-                    lambda x: None if (x is None or (isinstance(x, float) and x != x))
-                    else str(x)
-                )
-        table = pa.Table.from_pandas(df_batch, preserve_index=False)
-        if writer is None:
-            writer = pq.ParquetWriter(out_path, table.schema)
-        writer.write_table(table)
-        return writer
-
     try:
-        batches = []
-        writer = None
-        total_records = 0
+        # --- Passe 1 : collecter toutes les colonnes présentes dans les records canada ---
+        # Nécessaire pour construire un schéma fixe avant d'ouvrir le ParquetWriter.
+        logger.info("Pass 1 — scanning column names...")
+        all_columns = set()
+        canada_lines = []
 
         with gzip.open(tmp_path, "rt", encoding="utf-8") as gz:
             for line in gz:
@@ -77,45 +128,43 @@ def _download_and_filter(session, url, country):
                 record = json.loads(line)
                 if not _matches_country(record.get("countries_tags"), country):
                     continue
+                serialized = _serialize_record(record)
+                all_columns.update(serialized.keys())
+                canada_lines.append(serialized)
 
-                for key in record:
-                    if isinstance(record[key], (list, dict)):
-                        record[key] = json.dumps(record[key], ensure_ascii=False)
+        total_records = len(canada_lines)
+        logger.info(f"Found {total_records} {country} records, {len(all_columns)} distinct columns.")
 
-                batches.append(record)
+        if total_records == 0:
+            # Écrire un parquet vide avec schéma minimal
+            empty = pa.table({"code": pa.array([], type=pa.large_utf8())})
+            pq.write_table(empty, out_path)
+            return out_path, 0
 
-                if len(batches) >= BATCH_SIZE:
-                    writer = _flush_batch(batches, writer)
-                    total_records += len(batches)
-                    batches.clear()
+        schema = _build_schema(all_columns)
 
-            if batches:
-                writer = _flush_batch(batches, writer)
-                total_records += len(batches)
+        # --- Passe 2 : écriture en batches avec schéma fixe ---
+        logger.info("Pass 2 — writing parquet batches...")
+        with pq.ParquetWriter(out_path, schema) as writer:
+            for i in range(0, total_records, BATCH_SIZE):
+                batch = canada_lines[i: i + BATCH_SIZE]
+                table = _batch_to_table(batch, schema)
+                writer.write_table(table)
+                logger.info(
+                    f"  Batch {i // BATCH_SIZE + 1} written "
+                    f"({min(i + BATCH_SIZE, total_records)}/{total_records})"
+                )
 
-        if writer:
-            writer.close()
-
-        logger.info(f"Found {total_records} {country} records.")
         return out_path, total_records
+
     finally:
         os.unlink(tmp_path)
 
 
 def handle(filename, output_file_key, base_url, country="canada"):
-    """Download a single delta file, filter by country, and upload as parquet to S3.
-
-    Complex columns (lists, dicts) are serialized to JSON strings so that
-    PyArrow can write a clean parquet file without mixed-type conflicts.
-
-    Args:
-        filename: Name of the delta file to process (e.g. openfoodfacts_products_xxx.json.gz).
-        output_file_key: S3 key where the resulting parquet will be stored.
-        base_url: Base URL of the delta directory (e.g. https://static.openfoodfacts.org/data/delta/).
-        country: Country to filter on (substring match against countries_tags, default: canada).
-    """
-    s3_bucket = os.environ["S3_BUCKET"]
-    s3_endpoint = os.environ["S3_ENDPOINT"]
+    """Télécharge un fichier delta, filtre par pays et uploade en parquet sur S3."""
+    s3_bucket    = os.environ["S3_BUCKET"]
+    s3_endpoint  = os.environ["S3_ENDPOINT"]
     s3_access_key = os.environ["S3_ACCESS_KEY"]
     s3_secret_key = os.environ["S3_SECRET_KEY"]
 
@@ -138,3 +187,4 @@ def handle(filename, output_file_key, base_url, country="canada"):
         os.unlink(parquet_path)
 
     logger.info(f"Uploaded {output_file_key} ({total_records} records).")
+    

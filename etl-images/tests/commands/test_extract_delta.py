@@ -5,7 +5,15 @@ import pytest
 import tempfile
 import pandas as pd
 from unittest.mock import Mock, patch
-from commands.extract_delta import handle, _download_and_filter, _matches_country
+import pyarrow as pa
+from commands.extract_delta import (
+    handle,
+    _download_and_filter,
+    _matches_country,
+    _serialize_record,
+    _build_schema,
+    _batch_to_table,
+)
 
 BASE_URL = "https://static.openfoodfacts.org/data/delta/"
 FILENAME = "openfoodfacts_products_1770673073_1772050745.json.gz"
@@ -25,6 +33,81 @@ class TestMatchesCountry:
     def test_not_a_list(self):
         assert _matches_country(None, "canada") is False
         assert _matches_country("en:canada", "canada") is False
+
+
+class TestSerializeRecord:
+
+    def test_list_serialized_to_json_string(self):
+        record = {"tags": ["en:canada", "en:france"]}
+        result = _serialize_record(record)
+        assert result["tags"] == '["en:canada", "en:france"]'
+
+    def test_dict_serialized_to_json_string(self):
+        record = {"images": {"front": {"rev": "42"}}}
+        result = _serialize_record(record)
+        assert result["images"] == '{"front": {"rev": "42"}}'
+
+    def test_none_stays_none(self):
+        record = {"code": None}
+        result = _serialize_record(record)
+        assert result["code"] is None
+
+    def test_nan_becomes_none(self):
+        record = {"score": float("nan")}
+        result = _serialize_record(record)
+        assert result["score"] is None
+
+    def test_int_stays_int(self):
+        record = {"max_imgid": 5}
+        result = _serialize_record(record)
+        assert result["max_imgid"] == 5
+
+    def test_str_int_becomes_str(self):
+        record = {"max_imgid": "5"}
+        result = _serialize_record(record)
+        assert result["max_imgid"] == "5"
+
+    def test_bool_stays_bool(self):
+        record = {"obsolete": True}
+        result = _serialize_record(record)
+        assert result["obsolete"] is True
+
+
+class TestBuildSchema:
+
+    def test_all_columns_are_large_utf8(self):
+        schema = _build_schema({"code", "brands", "max_imgid"})
+        for field in schema:
+            assert field.type == pa.large_utf8()
+
+    def test_columns_sorted(self):
+        schema = _build_schema({"z_col", "a_col", "m_col"})
+        assert schema.names == ["a_col", "m_col", "z_col"]
+
+
+class TestBatchToTable:
+
+    def test_all_values_cast_to_string(self):
+        schema = _build_schema({"code", "max_imgid"})
+        batch = [
+            {"code": "1", "max_imgid": 3},
+            {"code": "2", "max_imgid": "7"},
+        ]
+        table = _batch_to_table(batch, schema)
+        assert table["max_imgid"][0].as_py() == "3"
+        assert table["max_imgid"][1].as_py() == "7"
+
+    def test_missing_column_filled_with_none(self):
+        schema = _build_schema({"code", "brands"})
+        batch = [{"code": "1"}]  # brands absent
+        table = _batch_to_table(batch, schema)
+        assert table["brands"][0].as_py() is None
+
+    def test_table_schema_matches_input_schema(self):
+        schema = _build_schema({"code", "brands"})
+        batch = [{"code": "1", "brands": "Nestlé"}]
+        table = _batch_to_table(batch, schema)
+        assert table.schema == schema
 
 
 class TestDownloadAndFilter:
