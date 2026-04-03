@@ -13,6 +13,7 @@ from commands.extract_delta import (
     _serialize_record,
     _build_schema,
     _batch_to_table,
+    _parse_keep_columns,
 )
 
 BASE_URL = "https://static.openfoodfacts.org/data/delta/"
@@ -108,6 +109,43 @@ class TestBatchToTable:
         batch = [{"code": "1", "brands": "Nestlé"}]
         table = _batch_to_table(batch, schema)
         assert table.schema == schema
+
+
+class TestParseKeepColumns:
+
+    def test_none_returns_none(self):
+        """None input means keep all columns."""
+        assert _parse_keep_columns(None) is None
+
+    def test_empty_string_returns_none(self):
+        """Empty string is treated as no filter."""
+        assert _parse_keep_columns("") is None
+
+    def test_simple_comma_separated(self):
+        """Comma-separated columns are each added to the set."""
+        result = _parse_keep_columns("code,brands,product_name")
+        assert result == {"code", "brands", "product_name"}
+
+    def test_pipe_syntax_both_sides_kept(self):
+        """Pipe syntax keeps both primary and fallback column names."""
+        result = _parse_keep_columns("ecoscore_score|environmental_score_score")
+        assert result == {"ecoscore_score", "environmental_score_score"}
+
+    def test_combined_comma_and_pipe(self):
+        """Mix of comma and pipe syntax is handled correctly."""
+        result = _parse_keep_columns("code,brands,ecoscore_score|environmental_score_score")
+        assert result == {"code", "brands", "ecoscore_score", "environmental_score_score"}
+
+    def test_whitespace_around_column_names_stripped(self):
+        """Extra spaces around column names are stripped."""
+        result = _parse_keep_columns(" code , brands ")
+        assert result == {"code", "brands"}
+
+    def test_returns_set(self):
+        """Return type is always a set (for O(1) membership testing)."""
+        result = _parse_keep_columns("code,code,brands")
+        assert isinstance(result, set)
+        assert result == {"code", "brands"}
 
 
 class TestDownloadAndFilter:
@@ -208,6 +246,78 @@ class TestDownloadAndFilter:
         finally:
             os.unlink(path)
 
+    def test_columns_filter_keeps_only_specified_columns(self):
+        """When columns= is given, the parquet only contains those columns."""
+        records = [
+            {
+                "code": "1",
+                "countries_tags": ["en:canada"],
+                "brands": "Nestlé",
+                "product_name": "Choco",
+                "ingredients_text": "sugar, cocoa",
+            }
+        ]
+        session = self._mock_session(self._make_gzip(records))
+
+        path, count = _download_and_filter(
+            session, BASE_URL + FILENAME, "canada",
+            columns="code,brands,countries_tags"
+        )
+        try:
+            df = pd.read_parquet(path)
+            assert set(df.columns) == {"code", "brands", "countries_tags"}
+            assert "product_name" not in df.columns
+            assert "ingredients_text" not in df.columns
+        finally:
+            os.unlink(path)
+
+    def test_columns_filter_pipe_syntax_keeps_both_alternatives(self):
+        """Pipe syntax (primary|fallback) keeps both column names if present."""
+        records = [
+            {
+                "code": "1",
+                "countries_tags": ["en:canada"],
+                "ecoscore_score": "80",
+                "environmental_score_score": "75",
+                "brands": "Nestlé",
+            }
+        ]
+        session = self._mock_session(self._make_gzip(records))
+
+        path, count = _download_and_filter(
+            session, BASE_URL + FILENAME, "canada",
+            columns="code,ecoscore_score|environmental_score_score"
+        )
+        try:
+            df = pd.read_parquet(path)
+            assert "ecoscore_score" in df.columns
+            assert "environmental_score_score" in df.columns
+            assert "brands" not in df.columns
+        finally:
+            os.unlink(path)
+
+    def test_columns_none_keeps_all_columns(self):
+        """When columns=None (default), all columns are preserved."""
+        records = [
+            {
+                "code": "1",
+                "countries_tags": ["en:canada"],
+                "brands": "Nestlé",
+                "product_name": "Choco",
+            }
+        ]
+        session = self._mock_session(self._make_gzip(records))
+
+        path, count = _download_and_filter(
+            session, BASE_URL + FILENAME, "canada", columns=None
+        )
+        try:
+            df = pd.read_parquet(path)
+            assert "brands" in df.columns
+            assert "product_name" in df.columns
+        finally:
+            os.unlink(path)
+
 
 class TestExtractDelta:
 
@@ -278,6 +388,20 @@ class TestExtractDelta:
             handle(FILENAME, "delta/output.parquet", BASE_URL)
 
             mock_s3_instance.upload_from_memory.assert_called_once()
+
+    def test_columns_param_forwarded_to_download(self, mock_env_vars):
+        """handle() forwards the columns parameter to _download_and_filter."""
+        parquet_path = self._make_parquet([{"code": "1"}])
+
+        with patch("commands.extract_delta._download_and_filter", return_value=(parquet_path, 1)) as mock_dl, \
+             patch("commands.extract_delta.requests.Session"), \
+             patch("commands.extract_delta.S3FileHandler") as mock_s3:
+
+            mock_s3.return_value = Mock()
+            handle(FILENAME, "delta/output.parquet", BASE_URL, columns="code,brands")
+
+            _, call_kwargs = mock_dl.call_args
+            assert call_kwargs.get("columns") == "code,brands" or mock_dl.call_args[0][3] == "code,brands"
 
     def test_missing_env_var(self):
         """KeyError is raised when S3 environment variables are missing."""
