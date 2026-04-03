@@ -37,6 +37,7 @@ Outputs MotherDuck (base: off) :
 """
 import pendulum
 from airflow.models import DAG
+from kubernetes.client import models as k8s
 from airflow.operators.empty import EmptyOperator
 from plugins.operators.duckdb_operator import DuckDBOperator
 from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOperator
@@ -44,6 +45,20 @@ from plugins.operators.custom_kubernetes_operator import CustomKubernetesPodOper
 
 IMAGE  = "mig8110/etl-images:1.0.0"
 DAG_ID = "off_initial_load"
+
+# Ressources Kubernetes par type de tâche (cluster : 5 GB RAM, 2 CPU)
+RESOURCES_HEAVY = k8s.V1ResourceRequirements(
+    requests={"memory": "1Gi",   "cpu": "500m"},
+    limits=  {"memory": "3500Mi", "cpu": "1500m"},
+)
+RESOURCES_MEDIUM = k8s.V1ResourceRequirements(
+    requests={"memory": "512Mi", "cpu": "250m"},
+    limits=  {"memory": "1500Mi", "cpu": "1000m"},
+)
+RESOURCES_LIGHT = k8s.V1ResourceRequirements(
+    requests={"memory": "256Mi", "cpu": "250m"},
+    limits=  {"memory": "1000Mi", "cpu": "500m"},
+)
 
 args = {
     'owner': 'airflow',
@@ -131,6 +146,7 @@ with dag:
         name='extract-data',
         image=IMAGE,
         env_vars={**s3_env_vars},
+        container_resources=RESOURCES_HEAVY,
         arguments=[
             "--command", "extract_data",
             "--output_file_key", RAW_FILE_KEY,
@@ -145,6 +161,7 @@ with dag:
         name='filter-data',
         image=IMAGE,
         env_vars={**s3_env_vars},
+        container_resources=RESOURCES_MEDIUM,
         arguments=[
             "--command", "filter_data",
             "--input_file_key",  RAW_FILE_KEY,
@@ -161,6 +178,7 @@ with dag:
         name='load-bronze',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
         arguments=[
             "--command", "load_data",
             "--input_file_key", RAW_FILE_KEY,
@@ -177,6 +195,7 @@ with dag:
         name='validate-data',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
+        container_resources=RESOURCES_MEDIUM,
         arguments=[
             "--command", "validate_data",
             "--input_file_key",   FILTERED_FILE_KEY,
@@ -195,6 +214,7 @@ with dag:
         name='transform-data',
         image=IMAGE,
         env_vars={**s3_env_vars},
+        container_resources=RESOURCES_MEDIUM,
         arguments=[
             "--command", "transform_data",
             "--input_file_key",  VALID_FILE_KEY,
@@ -210,6 +230,7 @@ with dag:
         name='normalize-categories',
         image=IMAGE,
         env_vars={**s3_env_vars},
+        container_resources=RESOURCES_MEDIUM,
         arguments=[
             "--command",                       "normalize_categories",
             "--input_file_key",                TRANSFORMED_FILE_KEY,
@@ -225,6 +246,7 @@ with dag:
         name='load-products',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
         arguments=[
             "--command",        "load_data",
             "--input_file_key", PRODUCTS_FILE_KEY,
@@ -239,6 +261,7 @@ with dag:
         name='load-categories',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
         arguments=[
             "--command",        "load_data",
             "--input_file_key", CATEGORIES_FILE_KEY,
@@ -253,6 +276,7 @@ with dag:
         name='load-product-categories',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
         arguments=[
             "--command",        "load_data",
             "--input_file_key", PRODUCT_CATEGORIES_FILE_KEY,
