@@ -159,7 +159,7 @@ def _normalize_tags(tags, canonical_map):
 # ---------------------------------------------------------------------------
 
 def _build_categories_table(all_tags, parent_map):
-    """Table categories avec category_id et parent_category_id."""
+    """Table categories avec category_name (PK) et parent_category_name."""
     tags_to_include = set(all_tags)
     for tag in list(all_tags):
         parent = parent_map.get(tag)
@@ -167,21 +167,18 @@ def _build_categories_table(all_tags, parent_map):
             tags_to_include.add(parent)
             parent = parent_map.get(parent)
 
-    sorted_tags = sorted(tags_to_include)
-    tag_to_id = {
-        tag: idx + 1 for idx, tag in enumerate(sorted_tags)
-    }
-
     rows = []
-    for tag, cat_id in tag_to_id.items():
+    for tag in sorted(tags_to_include):
         parent_tag = parent_map.get(tag)
         rows.append({
-            "category_id":        cat_id,
-            "category_name":      tag,
-            "parent_category_id": tag_to_id.get(parent_tag) if parent_tag else None,
+            "category_name":        tag,
+            "parent_category_name": parent_tag if parent_tag in tags_to_include else None,
         })
 
-    return pd.DataFrame(rows), tag_to_id
+    if not rows:
+        return pd.DataFrame(columns=["category_name", "parent_category_name"])
+
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +211,15 @@ def handle(
             "COLONNE 'categories_tags' ABSENTE DU PARQUET. "
             f"Colonnes disponibles : {df.columns.tolist()}"
         )
+        s3_handler.upload_dataframe(df, products_output_key)
+        s3_handler.upload_dataframe(
+            pd.DataFrame(columns=["category_name", "parent_category_name"]),
+            categories_output_key,
+        )
+        s3_handler.upload_dataframe(
+            pd.DataFrame(columns=["code", "category_name"]),
+            product_categories_output_key,
+        )
         return
 
     col = df["categories_tags"]
@@ -238,17 +244,18 @@ def handle(
         all_tags.update(tags)
     logger.info(f"Unique normalized categories: {len(all_tags)}")
 
-    df_categories, tag_to_id = _build_categories_table(all_tags, parent_map)
+    df_categories = _build_categories_table(all_tags, parent_map)
+    valid_categories = set(df_categories["category_name"])
 
     junction_rows = [
-        {"code": row["code"], "category_id": tag_to_id[tag]}
+        {"code": row["code"], "category_name": tag}
         for _, row in df[["code", "categories_tags"]].iterrows()
         for tag in row["categories_tags"]
-        if tag in tag_to_id
+        if tag in valid_categories
     ]
     df_product_categories = pd.DataFrame(
         junction_rows if junction_rows else [],
-        columns=["code", "category_id"],
+        columns=["code", "category_name"],
     )
 
     df_products = df.drop(columns=["categories_tags"])

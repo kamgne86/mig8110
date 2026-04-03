@@ -185,37 +185,36 @@ class TestNormalizeTags:
 
 class TestBuildCategoriesTable:
 
-    def test_categories_have_unique_ids(self, taxonomy_text):
+    def test_category_names_are_unique(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, _ = _build_categories_table({"en:maple-syrups", "en:syrups"}, parent_map)
-        assert df["category_id"].nunique() == len(df)
+        df = _build_categories_table({"en:maple-syrups", "en:syrups"}, parent_map)
+        assert df["category_name"].nunique() == len(df)
 
     def test_ancestors_included(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
         # On passe seulement en:maple-syrups, les ancêtres doivent être inclus
-        df, _ = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_categories_table({"en:maple-syrups"}, parent_map)
         names = set(df["category_name"])
         assert "en:syrups" in names
         assert "en:sweeteners" in names
 
-    def test_parent_category_id_set(self, taxonomy_text):
+    def test_parent_category_name_set(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_categories_table({"en:maple-syrups"}, parent_map)
         row = df[df["category_name"] == "en:maple-syrups"].iloc[0]
-        expected_parent_id = tag_to_id["en:syrups"]
-        assert row["parent_category_id"] == expected_parent_id
+        assert row["parent_category_name"] == "en:syrups"
 
     def test_root_has_no_parent(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, _ = _build_categories_table({"en:food"}, parent_map)
+        df = _build_categories_table({"en:food"}, parent_map)
         row = df[df["category_name"] == "en:food"].iloc[0]
-        assert pd.isna(row["parent_category_id"])
+        assert pd.isna(row["parent_category_name"])
 
-    def test_empty_tags_returns_empty_df(self, taxonomy_text):
+    def test_empty_tags_returns_empty_df_with_columns(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, tag_to_id = _build_categories_table(set(), parent_map)
+        df = _build_categories_table(set(), parent_map)
         assert len(df) == 0
-        assert tag_to_id == {}
+        assert list(df.columns) == ["category_name", "parent_category_name"]
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +267,7 @@ en:salty-snacks
             assert "categories_tags" not in uploaded["products.parquet"].columns
 
     def test_product_categories_fk_integrity(self, mock_env_vars, sample_df):
-        """Tous les category_id dans product_categories existent dans categories."""
+        """Tous les category_name dans product_categories existent dans categories."""
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt") as mock_dl:
             mock_dl.return_value = """
@@ -291,9 +290,9 @@ en:salty-snacks
             handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
 
             uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
-            cat_ids = set(uploaded["categories.parquet"]["category_id"])
-            junc_ids = set(uploaded["product_categories.parquet"]["category_id"])
-            assert junc_ids.issubset(cat_ids)
+            cat_names = set(uploaded["categories.parquet"]["category_name"])
+            junc_names = set(uploaded["product_categories.parquet"]["category_name"])
+            assert junc_names.issubset(cat_names)
 
     def test_missing_env_var_raises(self, sample_df):
         """KeyError si les variables S3 sont absentes."""
@@ -302,10 +301,15 @@ en:salty-snacks
                 handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
 
     def test_missing_categories_tags_column(self, mock_env_vars):
-        """Aucun upload si categories_tags est absente du parquet."""
+        """Si categories_tags est absente, 3 parquets sont quand même uploadés (vides pour categories et product_categories)."""
         df_without_col = pd.DataFrame({"code": ["001"], "product_name": ["X"]})
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt"):
-            mock_s3.return_value.download_to_memory.return_value = _df_to_parquet_bytes(df_without_col)
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df_without_col)
             handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
-            mock_s3.return_value.upload_dataframe.assert_not_called()
+            assert mock_s3_instance.upload_dataframe.call_count == 3
+            uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
+            assert list(uploaded["categories.parquet"].columns) == ["category_name", "parent_category_name"]
+            assert list(uploaded["product_categories.parquet"].columns) == ["code", "category_name"]
