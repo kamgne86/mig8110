@@ -29,32 +29,40 @@ Architecture — Mapped Task Groups (Airflow 2.5+) :
     ensuite chaque dict comme ensemble de paramètres nommés à une instance du groupe.
 
 Pipeline (par fichier delta, 1 task group instance par fichier) :
-    extract_delta        : Télécharge le fichier .json.gz, filtre par pays, uploade en parquet (Bronze)
-    filter_delta         : Sélectionne les colonnes utiles avec fallback pour les champs renommés
-    validate_delta       : Sépare les enregistrements valides des invalides selon les règles définies
-    transform_delta      : Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
-    normalize_categories : Normalise categories_tags → 3 tables (products, categories, product_categories)
-    load_products        : Upsert atomique silver.products — DELETE + INSERT par code (ROLLBACK si INSERT échoue)
-    load_categories      : Insert silver.categories (référentiel OFF avec hiérarchie)
-    load_product_categories : Upsert silver.product_categories — DELETE + INSERT par code
+    extract_delta          : Télécharge le fichier .json.gz, filtre par pays, uploade en parquet (Bronze)
+    filter_delta           : Sélectionne les colonnes utiles avec fallback pour les champs renommés
+    validate_delta         : Sépare les enregistrements valides des invalides selon les règles définies
+    transform_delta        : Construit les URLs d'images, extrait les nutriments, projette sur le schéma Silver
+    normalize_categories   : (parallèle) Normalise categories_tags → categories + product_categories
+    normalize_ingredients  : (parallèle) Normalise ingredients_tags → ingredients + product_ingredients
+    finalize_products      : Supprime categories_tags et ingredients_tags → produit la table products finale
+    load_products          : Upsert silver.products — DELETE + INSERT par code
+    load_categories        : Upsert silver.categories — DELETE + INSERT par category_name
+    load_product_categories: Upsert silver.product_categories — DELETE + INSERT par code
+    load_ingredients       : Upsert silver.ingredients — DELETE + INSERT par ingredient_name
+    load_product_ingredients: Upsert silver.product_ingredients — DELETE + INSERT par code
 
 Outputs S3 (bucket: bi-dev) :
-    Fichier S3                                          Couche    Destination MotherDuck
-    ──────────────────────────────────────────────────────────────────────────────────────
-    bronze/{stem}.parquet                               Bronze    —  (transit)
-    bronze/{stem}_filtered.parquet                      Bronze    —  (transit)
-    bronze/{stem}_invalid.parquet                       Bronze    —  (quarantaine)
-    silver/{stem}_valid.parquet                         Silver    —  (transit)
-    silver/{stem}_transformed.parquet                   Silver    —  (transit)
-    silver/{stem}_products.parquet                      Silver    —  (silver.products)
-    silver/{stem}_categories.parquet                    Silver    —  (silver.categories)
-    silver/{stem}_product_categories.parquet            Silver    —  (silver.product_categories)
+    Fichier S3                                            Couche    Destination MotherDuck
+    ──────────────────────────────────────────────────────────────────────────────────────────
+    bronze/{stem}.parquet                                 Bronze    —  (transit)
+    bronze/{stem}_filtered.parquet                        Bronze    —  (transit)
+    bronze/{stem}_invalid.parquet                         Bronze    —  (quarantaine)
+    silver/{stem}_valid.parquet                           Silver    —  (transit)
+    silver/{stem}_transformed.parquet                     Silver    —  (transit)
+    silver/{stem}_products.parquet                        Silver    —  (silver.products)
+    silver/{stem}_categories.parquet                      Silver    —  (silver.categories)
+    silver/{stem}_product_categories.parquet              Silver    —  (silver.product_categories)
+    silver/{stem}_ingredients.parquet                     Silver    —  (silver.ingredients)
+    silver/{stem}_product_ingredients.parquet             Silver    —  (silver.product_ingredients)
 
 Output MotherDuck (base: off) :
-    silver.products              : Produits transformés sans categories_tags — upsert sur `code`
-    silver.categories            : Référentiel OFF (category_id, category_name, parent_category_id)
-    silver.product_categories    : Table de jonction Many-to-Many (code, category_id)
-    monitoring.pipeline_runs     : Métriques d'exécution (records_in, records_out, rejection_rate)
+    silver.products               : Produits transformés sans colonnes normalisées — upsert sur `code`
+    silver.categories             : Référentiel OFF avec hiérarchie — upsert sur `category_name`
+    silver.product_categories     : Jonction Many-to-Many (code, category_name) — upsert sur `code`
+    silver.ingredients            : Référentiel OFF ingrédients — upsert sur `ingredient_name`
+    silver.product_ingredients    : Jonction Many-to-Many (code, ingredient_name) — upsert sur `code`
+    monitoring.pipeline_runs      : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 
 import re
@@ -119,13 +127,15 @@ airflow_env_vars = {
     "AIRFLOW_CTX_DAG_ID":     "{{ dag.dag_id }}",
 }
 
-DATABASE_NAME            = "off"
-SILVER_SCHEMA            = "silver"
-SILVER_TABLE             = "products"
-CATEGORIES_TABLE         = "categories"
-PRODUCT_CATEGORIES_TABLE = "product_categories"
-MONITORING_SCHEMA        = "monitoring"
-MONITORING_TABLE         = "pipeline_runs"
+DATABASE_NAME                = "off"
+SILVER_SCHEMA                = "silver"
+SILVER_TABLE                 = "products"
+CATEGORIES_TABLE             = "categories"
+PRODUCT_CATEGORIES_TABLE     = "product_categories"
+INGREDIENTS_TABLE            = "ingredients"
+PRODUCT_INGREDIENTS_TABLE    = "product_ingredients"
+MONITORING_SCHEMA            = "monitoring"
+MONITORING_TABLE             = "pipeline_runs"
 
 AIRFLOW_VAR_DELTA_FILE_LIST     = "delta_file_list"
 AIRFLOW_VAR_LAST_PROCESSED_FILE = "delta_last_processed_file"
@@ -141,7 +151,7 @@ FILTER_DELTA_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
     "ecoscore_score|environmental_score_score", "ecoscore_grade|environmental_score_grade",
-    "images", "ingredients_tags", "nutriscore_score", "nutriscore_grade", "nutrition",
+    "images", "ingredients_tags", "ingredients_n", "nutriscore_score", "nutriscore_grade", "nutrition",
 ])
 
 
@@ -233,23 +243,29 @@ with dag:
             sk = s.replace('.json.gz', '')
             ps = '-'.join(re.findall(r'\d+', s)[-2:])
             result.append({
-                'stem':                        s,
-                'extract_name':                f'extract-delta-{ps}',
-                'filter_name':                 f'filter-delta-{ps}',
-                'validate_name':               f'validate-delta-{ps}',
-                'transform_name':              f'transform-delta-{ps}',
-                'normalize_name':              f'normalize-categories-{ps}',
-                'load_products_name':          f'load-products-{ps}',
-                'load_categories_name':        f'load-categories-{ps}',
-                'load_product_categories_name':f'load-product-categories-{ps}',
-                'raw_key':                     f'{DAG_ID}/bronze/{sk}.parquet',
-                'filtered_key':                f'{DAG_ID}/bronze/{sk}_filtered.parquet',
-                'invalid_key':                 f'{DAG_ID}/bronze/{sk}_invalid.parquet',
-                'valid_key':                   f'{DAG_ID}/silver/{sk}_valid.parquet',
-                'transformed_key':             f'{DAG_ID}/silver/{sk}_transformed.parquet',
-                'products_key':                f'{DAG_ID}/silver/{sk}_products.parquet',
-                'categories_key':              f'{DAG_ID}/silver/{sk}_categories.parquet',
-                'product_categories_key':      f'{DAG_ID}/silver/{sk}_product_categories.parquet',
+                'stem':                            s,
+                'extract_name':                    f'extract-delta-{ps}',
+                'filter_name':                     f'filter-delta-{ps}',
+                'validate_name':                   f'validate-delta-{ps}',
+                'transform_name':                  f'transform-delta-{ps}',
+                'normalize_categories_name':       f'normalize-categories-{ps}',
+                'normalize_ingredients_name':      f'normalize-ingredients-{ps}',
+                'finalize_products_name':          f'finalize-products-{ps}',
+                'load_products_name':              f'load-products-{ps}',
+                'load_categories_name':            f'load-categories-{ps}',
+                'load_product_categories_name':    f'load-product-categories-{ps}',
+                'load_ingredients_name':           f'load-ingredients-{ps}',
+                'load_product_ingredients_name':   f'load-product-ingredients-{ps}',
+                'raw_key':                         f'{DAG_ID}/bronze/{sk}.parquet',
+                'filtered_key':                    f'{DAG_ID}/bronze/{sk}_filtered.parquet',
+                'invalid_key':                     f'{DAG_ID}/bronze/{sk}_invalid.parquet',
+                'valid_key':                       f'{DAG_ID}/silver/{sk}_valid.parquet',
+                'transformed_key':                 f'{DAG_ID}/silver/{sk}_transformed.parquet',
+                'products_key':                    f'{DAG_ID}/silver/{sk}_products.parquet',
+                'categories_key':                  f'{DAG_ID}/silver/{sk}_categories.parquet',
+                'product_categories_key':          f'{DAG_ID}/silver/{sk}_product_categories.parquet',
+                'ingredients_key':                 f'{DAG_ID}/silver/{sk}_ingredients.parquet',
+                'product_ingredients_key':         f'{DAG_ID}/silver/{sk}_product_ingredients.parquet',
             })
         return result
 
@@ -267,9 +283,12 @@ with dag:
     # opérateurs classiques.
     @task_group(group_id='pipeline_per_file')
     def pipeline_per_file(stem, extract_name, filter_name, validate_name, transform_name,
-                          normalize_name, load_products_name, load_categories_name, load_product_categories_name,
+                          normalize_categories_name, normalize_ingredients_name, finalize_products_name,
+                          load_products_name, load_categories_name, load_product_categories_name,
+                          load_ingredients_name, load_product_ingredients_name,
                           raw_key, filtered_key, valid_key, invalid_key, transformed_key,
-                          products_key, categories_key, product_categories_key):
+                          products_key, categories_key, product_categories_key,
+                          ingredients_key, product_ingredients_key):
 
         # ── extract_delta ────────────────────────────────────────────────────
         # Télécharge le fichier .json.gz en chunks, filtre les enregistrements
@@ -350,16 +369,15 @@ with dag:
         )
 
         # ── normalize_categories ─────────────────────────────────────────────
-        # Normalise categories_tags en 3 tables relationnelles (Silver).
-        normalize = CustomKubernetesPodOperator(
+        # (parallèle) Normalise categories_tags → categories + product_categories.
+        normalize_categories = CustomKubernetesPodOperator(
             dag=dag,
             task_id='normalize_categories',
-            name=normalize_name,
+            name=normalize_categories_name,
             image=IMAGE,
             arguments=[
                 "--command",                       "normalize_categories",
                 "--input_file_key",                transformed_key,
-                "--products_output_key",           products_key,
                 "--categories_output_key",         categories_key,
                 "--product_categories_output_key", product_categories_key,
             ],
@@ -368,8 +386,44 @@ with dag:
             do_xcom_push=False,
         )
 
+        # ── normalize_ingredients ────────────────────────────────────────────
+        # (parallèle) Normalise ingredients_tags → ingredients + product_ingredients.
+        normalize_ingredients = CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='normalize_ingredients',
+            name=normalize_ingredients_name,
+            image=IMAGE,
+            arguments=[
+                "--command",                          "normalize_ingredients",
+                "--input_file_key",                   transformed_key,
+                "--ingredients_output_key",           ingredients_key,
+                "--product_ingredients_output_key",   product_ingredients_key,
+            ],
+            env_vars={**s3_env_vars},
+            container_resources=RESOURCES_MEDIUM,
+            do_xcom_push=False,
+        )
+
+        # ── finalize_products ────────────────────────────────────────────────
+        # Supprime categories_tags et ingredients_tags → produit la table products finale.
+        # Dépend des deux normalize pour garantir que les tables de référence sont prêtes.
+        finalize_products = CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='finalize_products',
+            name=finalize_products_name,
+            image=IMAGE,
+            arguments=[
+                "--command",         "finalize_products",
+                "--input_file_key",  transformed_key,
+                "--output_file_key", products_key,
+            ],
+            env_vars={**s3_env_vars},
+            container_resources=RESOURCES_LIGHT,
+            do_xcom_push=False,
+        )
+
         # ── load_products ────────────────────────────────────────────────────
-        # Upsert atomique silver.products — DELETE + INSERT par code.
+        # Upsert silver.products — DELETE + INSERT par code.
         load_products = CustomKubernetesPodOperator(
             dag=dag,
             task_id='load_products',
@@ -423,10 +477,48 @@ with dag:
             do_xcom_push=False,
         )
 
-        extract >> filter_ >> validate >> transform >> normalize
-        normalize >> load_products
-        normalize >> load_categories
-        normalize >> load_product_categories
+        # ── load_ingredients ─────────────────────────────────────────────────
+        # Upsert silver.ingredients — DELETE + INSERT par ingredient_name.
+        load_ingredients = CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='load_ingredients',
+            name=load_ingredients_name,
+            image=IMAGE,
+            arguments=[
+                "--command",        "load_delta",
+                "--input_file_key", ingredients_key,
+                "--table_name",     INGREDIENTS_TABLE,
+                "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+                "--key_column",     "ingredient_name",
+            ],
+            env_vars={**s3_env_vars, **duckdb_env_vars},
+            container_resources=RESOURCES_LIGHT,
+            do_xcom_push=False,
+        )
+
+        # ── load_product_ingredients ─────────────────────────────────────────
+        # Upsert silver.product_ingredients — DELETE + INSERT par code.
+        load_product_ingredients = CustomKubernetesPodOperator(
+            dag=dag,
+            task_id='load_product_ingredients',
+            name=load_product_ingredients_name,
+            image=IMAGE,
+            arguments=[
+                "--command",        "load_delta",
+                "--input_file_key", product_ingredients_key,
+                "--table_name",     PRODUCT_INGREDIENTS_TABLE,
+                "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+            ],
+            env_vars={**s3_env_vars, **duckdb_env_vars},
+            container_resources=RESOURCES_LIGHT,
+            do_xcom_push=False,
+        )
+
+        extract >> filter_ >> validate >> transform
+        transform >> [normalize_categories, normalize_ingredients]
+        [normalize_categories, normalize_ingredients] >> finalize_products
+        finalize_products >> [load_products, load_categories, load_product_categories,
+                              load_ingredients, load_product_ingredients]
 
     process_mapped = pipeline_per_file.expand_kwargs(XComArg(build_file_params))
 
