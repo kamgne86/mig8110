@@ -187,7 +187,6 @@ def _build_categories_table(all_tags, parent_map):
 
 def handle(
     input_file_key,
-    products_output_key,
     categories_output_key,
     product_categories_output_key,
 ):
@@ -211,7 +210,6 @@ def handle(
             "COLONNE 'categories_tags' ABSENTE DU PARQUET. "
             f"Colonnes disponibles : {df.columns.tolist()}"
         )
-        s3_handler.upload_dataframe(df, products_output_key)
         s3_handler.upload_dataframe(
             pd.DataFrame(columns=["category_name", "parent_category_name"]),
             categories_output_key,
@@ -257,11 +255,6 @@ def handle(
         junction_rows if junction_rows else [],
         columns=["code", "category_name"],
     )
-
-    df_products = df.drop(columns=["categories_tags"])
-
-    s3_handler.upload_dataframe(df_products, products_output_key)
-    logger.info(f"products uploaded → {products_output_key} ({len(df_products)} records)")
 
     s3_handler.upload_dataframe(df_categories, categories_output_key)
     logger.info(f"categories uploaded → {categories_output_key} ({len(df_categories)} records)")

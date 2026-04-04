@@ -223,8 +223,9 @@ class TestBuildCategoriesTable:
 
 class TestHandle:
 
-    def test_three_parquets_uploaded(self, mock_env_vars, sample_df):
-        """handle() doit uploader exactement 3 parquets."""
+    def test_two_parquets_uploaded(self, mock_env_vars, sample_df):
+        """handle() doit uploader exactement 2 parquets (categories + product_categories).
+        La table products est produite par finalize_products."""
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt") as mock_dl:
             mock_dl.return_value = """
@@ -244,27 +245,12 @@ en:salty-snacks
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
+            handle("input.parquet", "categories.parquet", "product_categories.parquet")
 
-            assert mock_s3_instance.upload_dataframe.call_count == 3
+            assert mock_s3_instance.upload_dataframe.call_count == 2
             keys = [call[0][1] for call in mock_s3_instance.upload_dataframe.call_args_list]
-            assert "products.parquet" in keys
             assert "categories.parquet" in keys
             assert "product_categories.parquet" in keys
-
-    def test_categories_tags_removed_from_products(self, mock_env_vars, sample_df):
-        """La table products ne doit plus contenir categories_tags."""
-        with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
-             patch("commands.normalize_categories._download_categories_txt") as mock_dl:
-            mock_dl.return_value = "en:snacks\n"
-            mock_s3_instance = Mock()
-            mock_s3.return_value = mock_s3_instance
-            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
-
-            handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
-
-            uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
-            assert "categories_tags" not in uploaded["products.parquet"].columns
 
     def test_product_categories_fk_integrity(self, mock_env_vars, sample_df):
         """Tous les category_name dans product_categories existent dans categories."""
@@ -287,7 +273,7 @@ en:salty-snacks
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
+            handle("input.parquet", "categories.parquet", "product_categories.parquet")
 
             uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
             cat_names = set(uploaded["categories.parquet"]["category_name"])
@@ -298,18 +284,18 @@ en:salty-snacks
         """KeyError si les variables S3 sont absentes."""
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(KeyError, match="S3_BUCKET"):
-                handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
+                handle("input.parquet", "categories.parquet", "product_categories.parquet")
 
     def test_missing_categories_tags_column(self, mock_env_vars):
-        """Si categories_tags est absente, 3 parquets sont quand même uploadés (vides pour categories et product_categories)."""
+        """Si categories_tags est absente, 2 parquets vides sont quand même uploadés."""
         df_without_col = pd.DataFrame({"code": ["001"], "product_name": ["X"]})
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df_without_col)
-            handle("input.parquet", "products.parquet", "categories.parquet", "product_categories.parquet")
-            assert mock_s3_instance.upload_dataframe.call_count == 3
+            handle("input.parquet", "categories.parquet", "product_categories.parquet")
+            assert mock_s3_instance.upload_dataframe.call_count == 2
             uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
             assert list(uploaded["categories.parquet"].columns) == ["category_name", "parent_category_name"]
             assert list(uploaded["product_categories.parquet"].columns) == ["code", "category_name"]

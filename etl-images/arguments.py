@@ -3,7 +3,7 @@ import click
 command = click.option(
     '--command',
     required=True,
-    type=click.Choice(['extract_data', 'filter_data', 'validate_data', 'validate_delta', 'transform_data', 'load_data', 'fetch_delta_index', 'extract_delta', 'filter_delta', 'load_delta', 'transform_delta', 'merge_data', 'normalize_categories']),
+    type=click.Choice(['extract_data', 'filter_data', 'validate_data', 'validate_delta', 'transform_data', 'load_data', 'fetch_delta_index', 'extract_delta', 'filter_delta', 'load_delta', 'transform_delta', 'merge_data', 'normalize_categories', 'normalize_ingredients', 'finalize_products']),
     help='Command to execute'
 )
 
@@ -90,6 +90,20 @@ product_categories_output_key = click.option(
     type=str,
     default=None,
     help='Output file key in S3 for the product_categories junction parquet'
+)
+
+ingredients_output_key = click.option(
+    '--ingredients_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the ingredients parquet'
+)
+
+product_ingredients_output_key = click.option(
+    '--product_ingredients_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the product_ingredients junction parquet'
 )
 
 key_column = click.option(
