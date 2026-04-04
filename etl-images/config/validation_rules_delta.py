@@ -9,5 +9,5 @@ VALIDATION_RULES = [
     ("product_name notna", lambda df: df['product_name'].notna()),
     ("nutrition notna",    lambda df: df['nutrition'].notna()),
     # ("ingredients notna",    lambda df: df['ingredients'].notna()),
-    # ("categories_tags notna", lambda df: df['categories_tags'].notna()),
+    ("categories_tags notna", lambda df: df['categories_tags'].notna()),
 ]

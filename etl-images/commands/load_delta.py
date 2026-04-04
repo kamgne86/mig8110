@@ -7,11 +7,11 @@ from common.s3 import S3FileHandler
 logger = logging.getLogger(__name__)
 
 
-def handle(input_file_key, table_name, schema_name):
+def handle(input_file_key, table_name, schema_name, key_column="code"):
     """Download a transformed delta parquet from S3 and upsert it into MotherDuck.
 
-    Uses a DELETE + INSERT pattern keyed on `code`:
-    - Existing rows with matching codes are replaced (updated).
+    Uses a DELETE + INSERT pattern keyed on `key_column` (default: `code`):
+    - Existing rows with matching keys are replaced (updated).
     - New rows are inserted.
 
     Atomicité :
@@ -25,6 +25,7 @@ def handle(input_file_key, table_name, schema_name):
         input_file_key: S3 key of the transformed parquet to load.
         table_name: Target table name in MotherDuck.
         schema_name: Target schema name in MotherDuck.
+        key_column: Column used to identify rows to delete before re-inserting (default: "code").
     """
     s3_bucket = os.environ["S3_BUCKET"]
     s3_endpoint = os.environ["S3_ENDPOINT"]
@@ -54,7 +55,7 @@ def handle(input_file_key, table_name, schema_name):
         try:
             con.sql(
                 f"DELETE FROM {schema_name}.{table_name} "
-                f"WHERE code IN (SELECT code FROM read_parquet('{tmp.name}'))"
+                f"WHERE {key_column} IN (SELECT {key_column} FROM read_parquet('{tmp.name}'))"
             )
             con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM read_parquet('{tmp.name}')")
             con.sql("COMMIT")

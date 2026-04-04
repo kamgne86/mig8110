@@ -102,10 +102,12 @@ class TestValidateDelta:
     def test_all_valid(self, mock_env_vars):
         """When all records are valid, invalid file is empty."""
         nutrition = {"aggregated_set": {"nutrients": {"energy-kcal": {"value": 100.0}}}}
+        categories = ["en:beverages"]
         df = pd.DataFrame({
-            "code":         ["111", "222"],
-            "product_name": ["Product A", "Product B"],
-            "nutrition":    [nutrition, nutrition],
+            "code":            ["111", "222"],
+            "product_name":    ["Product A", "Product B"],
+            "nutrition":       [nutrition, nutrition],
+            "categories_tags": [categories, categories],
         })
 
         with patch("commands.validate_delta.S3FileHandler") as mock_s3, \
@@ -121,6 +123,31 @@ class TestValidateDelta:
                 for call in mock_s3_instance.upload_dataframe.call_args_list
             }
             assert len(uploaded_dfs["data_invalid.parquet"]) == 0
+
+    def test_null_categories_tags_rejected(self, mock_env_vars):
+        """Records with null categories_tags go to invalid file."""
+        nutrition = {"aggregated_set": {"nutrients": {"energy-kcal": {"value": 100.0}}}}
+        df = pd.DataFrame({
+            "code":            ["111", "222"],
+            "product_name":    ["Product A", "Product B"],
+            "nutrition":       [nutrition, nutrition],
+            "categories_tags": [["en:beverages"], None],
+        })
+
+        with patch("commands.validate_delta.S3FileHandler") as mock_s3, \
+             patch("commands.validate_delta.record_run"):
+            mock_s3_instance = Mock()
+            mock_s3.return_value = mock_s3_instance
+            mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df)
+
+            handle("data.parquet", "data_valid.parquet", "data_invalid.parquet", "monitoring", "pipeline_runs")
+
+            uploaded_dfs = {
+                call[0][1]: call[0][0]
+                for call in mock_s3_instance.upload_dataframe.call_args_list
+            }
+            assert list(uploaded_dfs["data_valid.parquet"]["code"]) == ["111"]
+            assert list(uploaded_dfs["data_invalid.parquet"]["code"]) == ["222"]
 
     def test_missing_env_var(self, sample_df):
         """KeyError is raised when S3 environment variables are missing."""

@@ -121,3 +121,67 @@ class TestLoadDelta:
         with patch.dict(os.environ, env_vars, clear=True):
             with pytest.raises(KeyError):
                 handle("delta/transformed.parquet", "source_transformed", "staging")
+
+
+class TestLoadDeltaKeyColumn:
+
+    @pytest.fixture
+    def mock_env_vars(self):
+        env_vars = {
+            "S3_BUCKET": "test-bucket",
+            "S3_ENDPOINT": "https://s3.example.com",
+            "S3_ACCESS_KEY": "test-key",
+            "S3_SECRET_KEY": "test-secret",
+            "DUCKDB_TOKEN": "test-token",
+            "DUCKDB_DB": "test-db",
+        }
+        with patch.dict(os.environ, env_vars):
+            yield env_vars
+
+    def test_default_key_column_is_code(self, mock_env_vars):
+        """Default key_column='code' is used in DELETE when no key_column is provided."""
+        with patch("commands.load_delta.S3FileHandler") as mock_s3_cls, \
+             patch("commands.load_delta.duckdb.connect") as mock_connect:
+
+            mock_s3_cls.return_value = Mock()
+            mock_con = Mock()
+            mock_connect.return_value = mock_con
+
+            handle("delta/transformed.parquet", "source_transformed", "staging")
+
+            sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
+            delete_sql = next(s for s in sql_calls if "DELETE" in s)
+            assert "WHERE code IN" in delete_sql
+            assert "SELECT code FROM" in delete_sql
+
+    def test_custom_key_column_used_in_delete(self, mock_env_vars):
+        """A custom key_column is used in the DELETE statement instead of 'code'."""
+        with patch("commands.load_delta.S3FileHandler") as mock_s3_cls, \
+             patch("commands.load_delta.duckdb.connect") as mock_connect:
+
+            mock_s3_cls.return_value = Mock()
+            mock_con = Mock()
+            mock_connect.return_value = mock_con
+
+            handle("delta/categories.parquet", "categories", "staging", key_column="category_name")
+
+            sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
+            delete_sql = next(s for s in sql_calls if "DELETE" in s)
+            assert "WHERE category_name IN" in delete_sql
+            assert "SELECT category_name FROM" in delete_sql
+            assert "WHERE code IN" not in delete_sql
+
+    def test_custom_key_column_does_not_affect_insert(self, mock_env_vars):
+        """key_column only changes DELETE; INSERT INTO still inserts all columns."""
+        with patch("commands.load_delta.S3FileHandler") as mock_s3_cls, \
+             patch("commands.load_delta.duckdb.connect") as mock_connect:
+
+            mock_s3_cls.return_value = Mock()
+            mock_con = Mock()
+            mock_connect.return_value = mock_con
+
+            handle("delta/categories.parquet", "categories", "staging", key_column="category_name")
+
+            sql_calls = [c[0][0] for c in mock_con.sql.call_args_list]
+            insert_sql = next(s for s in sql_calls if "INSERT" in s)
+            assert "INSERT INTO staging.categories" in insert_sql
