@@ -79,6 +79,8 @@ args = {
 dag = DAG(
     dag_id=DAG_ID,
     default_args=args,
+    max_active_runs=1,
+    concurrency=1,
     schedule_interval=None,
     catchup=False,
     tags=['mig8110', 'off']
@@ -168,12 +170,13 @@ with dag:
 
     # Sélectionne uniquement les colonnes nécessaires au pipeline
     # afin de réduire l'empreinte mémoire des étapes suivantes.
+    # RESOURCES_HEAVY : le snapshot initial peut dépasser 1500Mi selon sa taille.
     filter_data = CustomKubernetesPodOperator(
         dag=dag,
         name='filter-data',
         image=IMAGE,
         env_vars={**s3_env_vars},
-        container_resources=RESOURCES_MEDIUM,
+        container_resources=RESOURCES_HEAVY,
         arguments=[
             "--command", "filter_data",
             "--input_file_key",  RAW_FILE_KEY,
@@ -207,7 +210,7 @@ with dag:
         name='validate-data',
         image=IMAGE,
         env_vars={**s3_env_vars, **duckdb_env_vars, **airflow_env_vars},
-        container_resources=RESOURCES_MEDIUM,
+        container_resources=RESOURCES_HEAVY,
         arguments=[
             "--command", "validate_data",
             "--input_file_key",   FILTERED_FILE_KEY,
