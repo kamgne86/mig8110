@@ -190,11 +190,16 @@ def _build_categories_table(all_tags, parent_map):
         })
 
     if not rows:
-        return pd.DataFrame(
-            columns=["category_id", "category_name", "parent_category_id"]
-        ), {}
+        return pd.DataFrame({
+            "category_id":        pd.array([], dtype=pd.Int64Dtype()),
+            "category_name":      pd.array([], dtype="string"),
+            "parent_category_id": pd.array([], dtype=pd.Int64Dtype()),
+        }), {}
 
-    return pd.DataFrame(rows), tag_to_id
+    df = pd.DataFrame(rows)
+    df["category_id"]        = df["category_id"].astype(pd.Int64Dtype())
+    df["parent_category_id"] = df["parent_category_id"].astype(pd.Int64Dtype())
+    return df, tag_to_id
 
 
 # ---------------------------------------------------------------------------
