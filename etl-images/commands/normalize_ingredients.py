@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 INGREDIENTS_TXT_URL = (
     "https://raw.githubusercontent.com/openfoodfacts/"
-    "openfoodfacts-server/main/taxonomies/ingredients.txt"
+    "openfoodfacts-server/main/taxonomies/food/ingredients.txt"
 )
 
 
