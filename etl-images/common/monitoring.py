@@ -37,11 +37,11 @@ def record_run(command, records_in, records_out, records_rejected=0, monitoring_
             dag_run_id       VARCHAR,
             dag_name         VARCHAR,
             command          VARCHAR,
-            records_in       INTEGER,
-            records_out      INTEGER,
-            records_rejected INTEGER,
-            rejection_rate   FLOAT,
-            executed_at      TIMESTAMP
+            records_in       BIGINT,
+            records_out      BIGINT,
+            records_rejected BIGINT,
+            rejection_rate   DOUBLE,
+            executed_at      TIMESTAMPTZ
         )
     """)
     con.execute(

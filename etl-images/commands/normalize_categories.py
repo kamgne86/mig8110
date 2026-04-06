@@ -180,25 +180,20 @@ def _build_categories_table(all_tags, parent_map):
 
     tag_to_id = {tag: _stable_id(tag) for tag in tags_to_include}
 
-    rows = []
-    for tag, cat_id in tag_to_id.items():
-        parent_tag = parent_map.get(tag)
-        rows.append({
-            "category_id":        cat_id,
-            "category_name":      tag,
-            "parent_category_id": tag_to_id.get(parent_tag) if parent_tag in tag_to_id else None,
-        })
-
-    if not rows:
+    if not tag_to_id:
         return pd.DataFrame({
             "category_id":        pd.array([], dtype=pd.Int64Dtype()),
             "category_name":      pd.array([], dtype="string"),
             "parent_category_id": pd.array([], dtype=pd.Int64Dtype()),
         }), {}
 
-    df = pd.DataFrame(rows)
-    df["category_id"]        = df["category_id"].astype(pd.Int64Dtype())
-    df["parent_category_id"] = df["parent_category_id"].astype(pd.Int64Dtype())
+    tags       = list(tag_to_id.keys())
+    parent_ids = [tag_to_id.get(parent_map.get(tag)) for tag in tags]
+    df = pd.DataFrame({
+        "category_id":        pd.array(list(tag_to_id.values()), dtype=pd.Int64Dtype()),
+        "category_name":      tags,
+        "parent_category_id": pd.array(parent_ids, dtype=pd.Int64Dtype()),
+    })
     return df, tag_to_id
 
 
