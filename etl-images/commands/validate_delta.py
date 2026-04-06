@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import pandas as pd
 from common.s3 import S3FileHandler
@@ -40,7 +41,7 @@ def handle(input_file_key, output_file_key, invalid_file_key, schema_name, table
     s3_handler.upload_dataframe(df_invalid, invalid_file_key)
     logger.info(f"Data uploaded to S3: {invalid_file_key}")
 
-    stem = input_file_key.split("/")[-1].replace(".parquet", "")
+    stem = "_".join(re.findall(r'\d+', input_file_key.split("/")[-1])[-2:])
     record_run(
         command=f"validate_delta/{stem}",
         records_in=len(df_valid) + len(df_invalid),
