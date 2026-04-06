@@ -15,7 +15,27 @@ function escHtml(str) {
     '"': '&quot;',
     "'": '&#39;'
   };
-  return str.replace(/[&<>"']/g, m => map[m]);
+  return String(str).replace(/[&<>"']/g, m => map[m]);
+}
+
+/** Échappe pour attribut HTML (URL-encode) */
+function escAttr(str) {
+  return encodeURIComponent(str);
+}
+
+/** Debounce : retarde l'exécution d'une fonction */
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+/** Formatte une valeur numérique avec unité */
+function val(v, unit = '', decimals = 2) {
+  if (v === null || v === undefined || v === '') return '—';
+  return (Math.round(v * 100) / 100).toFixed(decimals) + (unit ? ' ' + unit : '');
 }
 
 /**
@@ -84,7 +104,6 @@ function getIngredientsList(product, maxItems = null) {
 
   // Nouveau modèle : tableau de ingredient_name renvoyé par l'API
   if (Array.isArray(product.ingredients) && product.ingredients.length) {
-    // Si déjà nettoyé (pas de préfixe), retourner directement
     const firstItem = product.ingredients[0] || '';
     const alreadyCleaned = !firstItem.match(/^[a-z]{2,3}:/);
 
@@ -92,7 +111,6 @@ function getIngredientsList(product, maxItems = null) {
       return maxItems ? product.ingredients.slice(0, maxItems) : product.ingredients;
     }
 
-    // Sinon nettoyer (pour compatibilité)
     const labels = product.ingredients.map(tag => tag.replace(/^[a-z]{2,3}:/, '').replace(/-/g, ' '));
     return maxItems ? labels.slice(0, maxItems) : labels;
   }
@@ -103,4 +121,14 @@ function getIngredientsList(product, maxItems = null) {
   const text = getFallbackIngredientText(product);
   if (!text) return [];
   return splitIngredientString(text, maxItems);
+}
+
+/** Bande visuelle Nutri-Score A-E avec la lettre active mise en évidence */
+function renderNutriScoreBand(grade) {
+  const grades = ['a', 'b', 'c', 'd', 'e'];
+  const g = validGrade(grade);
+  if (!g) return '';
+  return `<div class="ns-band">${grades.map(l =>
+    `<span class="ns-cell ns-cell-${l}${l === g ? ' ns-active' : ''}">${l.toUpperCase()}</span>`
+  ).join('')}</div>`;
 }

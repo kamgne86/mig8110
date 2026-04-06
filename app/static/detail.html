@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260329_1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260406" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
   <div class="page">
     <div class="detail-panel panel">
       <div class="detail-header panel-header">
-        <a href="/static/index.html" class="back-arrow">←</a>
+        <a href="/static/index.html" class="back-arrow">&#8592;</a>
         <h1 id="name">Chargement…</h1>
       </div>
 
@@ -23,7 +23,7 @@
         <div class="scores-row">
           <div class="score-line">
             <span class="nutri-label">Nutri-Score</span>
-            <span class="nutri-score" id="nutriScore">—</span>
+            <span id="nutriScore" class="nutri-score">—</span>
           </div>
           <div class="score-line">
             <span class="nutri-label eco">Éco-Score</span>
@@ -31,18 +31,29 @@
           </div>
         </div>
 
+        <div id="keyFacts" class="key-facts"></div>
+
         <div class="separator"></div>
 
         <h3 class="detail-section-title">Infos Nutritionnelles (pour 100g)</h3>
         <ul class="nutrition-details">
           <li><i data-lucide="flame"         class="nutri-icon"></i> Calories : <span id="calories">—</span></li>
+          <li><i data-lucide="wheat"          class="nutri-icon"></i> Glucides : <span id="carbs">—</span></li>
           <li><i data-lucide="candy"          class="nutri-icon"></i> Sucres : <span id="sugars">—</span></li>
-          <li><i data-lucide="circle-dot"     class="nutri-icon"></i> Sel : <span id="salt">—</span></li>
+          <li><i data-lucide="leaf"           class="nutri-icon"></i> Fibres : <span id="fiber">—</span></li>
           <li><i data-lucide="droplets"       class="nutri-icon"></i> Lipides : <span id="fat">—</span></li>
           <li><i data-lucide="activity"       class="nutri-icon"></i> Acides gras saturés : <span id="saturated">—</span></li>
+          <li><i data-lucide="triangle"       class="nutri-icon"></i> Acides gras trans : <span id="transFat">—</span></li>
+          <li><i data-lucide="heart"          class="nutri-icon"></i> Cholestérol : <span id="cholesterol">—</span></li>
           <li><i data-lucide="dumbbell"       class="nutri-icon"></i> Protéines : <span id="proteins">—</span></li>
-          <li><i data-lucide="wheat"          class="nutri-icon"></i> Glucides : <span id="carbs">—</span></li>
-          <li><i data-lucide="leaf"           class="nutri-icon"></i> Fibres : <span id="fiber">—</span></li>
+          <li><i data-lucide="circle-dot"     class="nutri-icon"></i> Sel : <span id="salt">—</span></li>
+        </ul>
+
+        <h3 class="detail-section-title" style="margin-top:16px;">Minéraux (pour 100g)</h3>
+        <ul class="nutrition-details">
+          <li><i data-lucide="bone"           class="nutri-icon"></i> Calcium : <span id="calcium">—</span></li>
+          <li><i data-lucide="droplet"        class="nutri-icon"></i> Fer : <span id="iron">—</span></li>
+          <li><i data-lucide="zap"            class="nutri-icon"></i> Potassium : <span id="potassium">—</span></li>
         </ul>
 
         <div class="separator"></div>
@@ -63,7 +74,7 @@
         <div id="rawJsonSection" style="display:none; margin-top:20px;">
           <div class="separator"></div>
           <h3 class="detail-section-title">
-            <button class="small-btn" onclick="toggleRaw()">Voir données brutes ▼</button>
+            <button class="small-btn" onclick="toggleRaw()">Voir données brutes &#9660;</button>
           </h3>
           <pre id="rawJson" style="display:none; background:#f8fafc; padding:14px; border-radius:8px; overflow:auto; font-size:12px; color:#475467;"></pre>
         </div>
@@ -71,127 +82,9 @@
     </div>
   </div>
 
-  <script src="/static/js/utils.js?v=20260329_1"></script>
-  <script>
-    const API_BASE = '';  // même origine que le backend FastAPI
-
-    async function loadProduct() {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get('code');
-
-      if (!code) {
-        document.getElementById('name').textContent = 'Code produit manquant';
-        return;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE}/products/${code}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const p = await res.json();
-        fillFromProduct(p);
-      } catch (e) {
-        document.getElementById('name').textContent = 'Erreur de chargement';
-        console.error(e);
-      }
-    }
-
-    function val(v, unit = '', decimals = 2) {
-      if (v === null || v === undefined || v === '') return '—';
-      return (Math.round(v * 100) / 100).toFixed(decimals) + (unit ? ' ' + unit : '');
-    }
-
-    // validGrade() et parseTags() sont définis dans utils.js
-
-    function fillFromProduct(p) {
-      document.title = p.product_name || 'Détail produit';
-      document.getElementById('name').textContent  = p.product_name || 'Sans nom';
-      document.getElementById('brand').textContent = p.brands || 'Sans marque';
-
-      // Nutri-Score
-      const nsGrade = validGrade(p.nutriscore_grade);
-      const ns = document.getElementById('nutriScore');
-      ns.textContent = nsGrade ? nsGrade.toUpperCase() : '—';
-      ns.className   = nsGrade ? `nutri-score ns-${nsGrade}` : 'nutri-score';
-
-      // Éco-Score
-      const esGrade = validGrade(p.ecoscore_grade);
-      const es = document.getElementById('ecoScore');
-      es.textContent = esGrade ? esGrade.toUpperCase() : '—';
-      es.className   = esGrade ? `nutri-score eco es-${esGrade}` : 'nutri-score eco';
-
-      document.getElementById('calories').textContent  = val(p.energy_kcal_100g, 'kcal', 0);
-      document.getElementById('sugars').textContent    = val(p.sugars_100g, 'g');
-      document.getElementById('salt').textContent      = val(p.salt_100g, 'g');
-      document.getElementById('fat').textContent       = val(p.fat_100g, 'g');
-      document.getElementById('saturated').textContent = val(p.saturated_fat_100g, 'g');
-      document.getElementById('proteins').textContent  = val(p.proteins_100g, 'g');
-      document.getElementById('carbs').textContent     = val(p.carbohydrates_100g, 'g');
-      document.getElementById('fiber').textContent     = val(p.fiber_100g, 'g');
-
-      // Ingrédients : tableau ingredient_name renvoyé par l'API → afficher comme tags cliquables
-      const ingredientsList = getIngredientsList(p);
-      if (ingredientsList && ingredientsList.length) {
-        try {
-          document.getElementById('ingredients').innerHTML = ingredientsList
-            .map(ing => `<a href="/static/index.html?ingredient=${encodeURIComponent(ing)}" class="tag-link">${escHtml(ing)}</a>`)
-            .join('');
-        } catch (err) {
-          console.error('Erreur ingrédients:', err);
-          document.getElementById('ingredients').textContent = ingredientsList.join(', ');
-        }
-      } else {
-        document.getElementById('ingredients').textContent = '—';
-      }
-
-      // Catégories : afficher comme tags cliquables avec hiérarchie
-      if (p.categories && p.categories.length) {
-        try {
-          document.getElementById('categoriesList').innerHTML = p.categories
-            .map(cat => {
-              // cat peut être string (ancien format) ou objet (nouveau format)
-              if (typeof cat === 'string') {
-                return `<a href="/static/index.html?category=${encodeURIComponent(cat)}" class="tag-link">${escHtml(cat)}</a>`;
-              } else if (cat && typeof cat === 'object') {
-                // Nouveau format avec parent/child
-                const displayChild = cat.child || cat.display || '';
-                const hasParent = cat.parent && cat.parent !== null;
-                return `<a href="/static/index.html?category=${encodeURIComponent(displayChild)}" class="tag-link${hasParent ? ' category-hierarchical' : ''}">
-                  ${hasParent ? `<span class="cat-parent">${escHtml(cat.parent)}</span><span class="cat-separator">›</span>` : ''}
-                  <span class="cat-child">${escHtml(displayChild)}</span>
-                </a>`;
-              }
-              return '';
-            })
-            .filter(x => x)
-            .join('');
-        } catch (err) {
-          console.error('Erreur catégories:', err);
-          document.getElementById('categoriesList').textContent = 'Erreur affichage catégories';
-        }
-      } else {
-        document.getElementById('categoriesList').textContent = '—';
-      }
-
-      if (p.front_url) {
-        const box = document.getElementById('imageBox');
-        const img = document.createElement('img');
-        img.src = p.front_url;
-        img.alt = 'Photo produit';
-        img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:12px;';
-        box.replaceChildren(img);
-      }
-
-      // Données brutes
-      document.getElementById('rawJsonSection').style.display = 'block';
-      document.getElementById('rawJson').textContent = JSON.stringify(p, null, 2);
-    }
-
-    function toggleRaw() {
-      const pre = document.getElementById('rawJson');
-      pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
-    }
-
-    loadProduct().then(() => lucide.createIcons());
-  </script>
+  <!-- Scripts -->
+  <script src="/static/js/utils.js?v=20260406"></script>
+  <script src="/static/js/api.js?v=20260406"></script>
+  <script src="/static/js/pages/detail.js?v=20260406"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FoodHealth Advisor</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260329_1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260406" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -93,7 +93,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h2>Comparaison</h2>
-        <button class="modal-close" onclick="fermerComparaison()">✕</button>
+        <button class="modal-close" onclick="fermerComparaison()">&#10005;</button>
       </div>
       <div class="modal-body">
         <div id="radarChartContainer" style="max-width: 600px; margin: 0 auto 24px; display: none;">
@@ -109,7 +109,7 @@
     <div class="modal-box" style="max-width: 500px;">
       <div class="modal-header">
         <h2>Sélectionner les métriques</h2>
-        <button class="modal-close" onclick="fermerMetricsSelector()">✕</button>
+        <button class="modal-close" onclick="fermerMetricsSelector()">&#10005;</button>
       </div>
       <div class="modal-body">
         <div id="metricsContent"></div>
@@ -121,8 +121,16 @@
     </div>
   </div>
 
-  <script src="/static/js/utils.js?v=20260329_1"></script>
-  <script src="/static/js/app.js?v=20260330_1"></script>
+  <!-- Scripts : ordre de chargement important -->
+  <script src="/static/js/utils.js?v=20260406"></script>
+  <script src="/static/js/state.js?v=20260406"></script>
+  <script src="/static/js/api.js?v=20260406"></script>
+  <script src="/static/js/components/productCard.js?v=20260406"></script>
+  <script src="/static/js/components/filters.js?v=20260406"></script>
+  <script src="/static/js/components/insights.js?v=20260406"></script>
+  <script src="/static/js/components/comparison.js?v=20260406"></script>
+  <script src="/static/js/components/metricsSelector.js?v=20260406"></script>
+  <script src="/static/js/app.js?v=20260406"></script>
   <script>lucide.createIcons();</script>
 </body>
 </html>

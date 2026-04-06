@@ -1,10 +1,15 @@
-from config import get_conn, TABLE_NAME, SILVER_SCHEMA
-from typing import List, Dict, Any, Optional
+import logging
 import re
+from contextlib import contextmanager
+from typing import Any, Dict, List, Optional
 
-CATEGORIES_TABLE         = f"{SILVER_SCHEMA}.categories"
+from config import SILVER_SCHEMA, TABLE_NAME, get_conn
+
+logger = logging.getLogger(__name__)
+
+CATEGORIES_TABLE = f"{SILVER_SCHEMA}.categories"
 PRODUCT_CATEGORIES_TABLE = f"{SILVER_SCHEMA}.product_categories"
-INGREDIENTS_TABLE        = f"{SILVER_SCHEMA}.ingredients"
+INGREDIENTS_TABLE = f"{SILVER_SCHEMA}.ingredients"
 PRODUCT_INGREDIENTS_TABLE = f"{SILVER_SCHEMA}.product_ingredients"
 
 
@@ -12,24 +17,28 @@ def clean_name(name: str) -> str:
     """Nettoie les préfixes de langue (en:, fr:, ar:, etc.) et remplace - par espaces."""
     if not name:
         return name
-    # Enlever préfixes langue (en:, fr:, ar:, etc.)
     cleaned = re.sub(r'^[a-z]{2,3}:', '', name)
-    # Remplacer tirets par espaces
     cleaned = cleaned.replace('-', ' ')
-    # Capitaliser première lettre
     return cleaned.strip().capitalize()
+
+
+@contextmanager
+def get_connection():
+    """Context manager pour les connexions DuckDB."""
+    conn = get_conn()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def execute_query(sql: str, params: List[Any] = None) -> List[Dict]:
     """Exécute une requête sur une connexion dédiée et la ferme aussitôt."""
-    conn = get_conn()
-    try:
+    with get_connection() as conn:
         result = conn.execute(sql, params or [])
         cols = [c[0] for c in result.description]
         rows = result.fetchall()
         return [dict(zip(cols, row)) for row in rows]
-    finally:
-        conn.close()
 
 
 def get_products_list(
@@ -67,7 +76,6 @@ def get_products_list(
         sql += " AND lower(p.brands) LIKE ?"
         params.append(f"%{brand.lower()}%")
     if ingredient:
-        # Transformer pour matcher: espaces → tirets, lowercase
         ingredient_search = ingredient.lower().replace(' ', '-')
         sql += f"""
             AND p.code IN (
@@ -83,7 +91,6 @@ def get_products_list(
         params.append(f"%{ingredient_search}%")
         params.append(f"%{ingredient_search}%")
     if category:
-        # Transformer pour matcher: espaces → tirets, lowercase
         category_search = category.lower().replace(' ', '-')
         sql += f"""
             AND p.code IN (
@@ -104,7 +111,6 @@ def get_products_list(
 
     results = execute_query(sql, params)
 
-    # Parse categories string into array et nettoyer les noms
     for product in results:
         if product.get('categories') and product['categories'].strip():
             raw_cats = product['categories'].split('|')
@@ -127,8 +133,7 @@ def get_all_categories() -> List[Dict]:
 
 def get_product_by_code(code: str) -> Optional[Dict]:
     """Détail d'un produit par code avec ses catégories et ingrédients."""
-    conn = get_conn()
-    try:
+    with get_connection() as conn:
         result = conn.execute(f"SELECT * FROM {TABLE_NAME} WHERE code = ?", [code])
         cols = [c[0] for c in result.description]
         row = result.fetchone()
@@ -136,40 +141,29 @@ def get_product_by_code(code: str) -> Optional[Dict]:
             return None
         product = dict(zip(cols, row))
 
-        # Récupérer les catégories avec hiérarchie parent > enfant
+        # Catégories avec hiérarchie — un seul JOIN au lieu de N+1 requêtes
         cat_result = conn.execute(f"""
-            SELECT DISTINCT pc.category_id, c.category_name, c.parent_category_id
+            SELECT DISTINCT c.category_id, c.category_name, c.parent_category_id,
+                   p.category_name as parent_name
             FROM {PRODUCT_CATEGORIES_TABLE} pc
             JOIN {CATEGORIES_TABLE} c ON pc.category_id = c.category_id
+            LEFT JOIN {CATEGORIES_TABLE} p ON c.parent_category_id = p.category_id
             WHERE pc.code = ?
             ORDER BY c.category_name
         """, [code])
 
         categories_with_hierarchy = []
         for row_cat in cat_result.fetchall():
-            cat_id, cat_name, parent_id = row_cat
+            cat_id, cat_name, parent_id, parent_name = row_cat
             cleaned_cat = clean_name(cat_name)
 
-            if parent_id:
-                # Chercher le parent
-                parent_result = conn.execute(f"""
-                    SELECT category_name FROM {CATEGORIES_TABLE} WHERE category_id = ?
-                """, [parent_id])
-                parent_row = parent_result.fetchone()
-                if parent_row:
-                    cleaned_parent = clean_name(parent_row[0])
-                    # Retourner objet avec parent et child pour styling frontend
-                    categories_with_hierarchy.append({
-                        "parent": cleaned_parent,
-                        "child": cleaned_cat,
-                        "display": f"{cleaned_parent} › {cleaned_cat}"
-                    })
-                else:
-                    categories_with_hierarchy.append({
-                        "parent": None,
-                        "child": cleaned_cat,
-                        "display": cleaned_cat
-                    })
+            if parent_id and parent_name:
+                cleaned_parent = clean_name(parent_name)
+                categories_with_hierarchy.append({
+                    "parent": cleaned_parent,
+                    "child": cleaned_cat,
+                    "display": f"{cleaned_parent} › {cleaned_cat}"
+                })
             else:
                 categories_with_hierarchy.append({
                     "parent": None,
@@ -179,6 +173,7 @@ def get_product_by_code(code: str) -> Optional[Dict]:
 
         product["categories"] = categories_with_hierarchy
 
+        # Ingrédients
         ing_result = conn.execute(f"""
             SELECT i.ingredient_name
             FROM {PRODUCT_INGREDIENTS_TABLE} pi
@@ -190,5 +185,3 @@ def get_product_by_code(code: str) -> Optional[Dict]:
         product["ingredients"] = [clean_name(ing) for ing in raw_ingredients]
 
         return product
-    finally:
-        conn.close()
