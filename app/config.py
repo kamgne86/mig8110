@@ -6,7 +6,8 @@ load_dotenv()
 
 DUCKDB_TOKEN = os.getenv("DUCKDB_TOKEN")
 DUCKDB_DB = os.getenv("DUCKDB_DB")
-TABLE_NAME = os.getenv("TABLE_NAME", "raw.products")
+TABLE_NAME   = os.getenv("TABLE_NAME",   "silver.products")
+SILVER_SCHEMA = os.getenv("SILVER_SCHEMA", "silver")
 
 if not DUCKDB_TOKEN or not DUCKDB_DB:
     raise RuntimeError("DUCKDB_TOKEN et/ou DUCKDB_DB manquants dans .env")

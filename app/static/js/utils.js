@@ -5,6 +5,19 @@ function validGrade(grade) {
   return ['a','b','c','d','e'].includes(g) ? g : null;
 }
 
+/** Échappe une chaîne HTML pour éviter les injections XSS */
+function escHtml(str) {
+  if (!str) return '';
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  };
+  return str.replace(/[&<>"']/g, m => map[m]);
+}
+
 /**
  * Parse un champ tags qui peut être :
  *   - un vrai tableau JS  : ["en:foo-bar", "fr:baz"]   (format API)
@@ -68,6 +81,23 @@ function splitIngredientString(value, maxItems = null) {
 
 function getIngredientsList(product, maxItems = null) {
   if (!product) return [];
+
+  // Nouveau modèle : tableau de ingredient_name renvoyé par l'API
+  if (Array.isArray(product.ingredients) && product.ingredients.length) {
+    // Si déjà nettoyé (pas de préfixe), retourner directement
+    const firstItem = product.ingredients[0] || '';
+    const alreadyCleaned = !firstItem.match(/^[a-z]{2,3}:/);
+
+    if (alreadyCleaned) {
+      return maxItems ? product.ingredients.slice(0, maxItems) : product.ingredients;
+    }
+
+    // Sinon nettoyer (pour compatibilité)
+    const labels = product.ingredients.map(tag => tag.replace(/^[a-z]{2,3}:/, '').replace(/-/g, ' '));
+    return maxItems ? labels.slice(0, maxItems) : labels;
+  }
+
+  // Fallback legacy : ingredients_tags (ancien modèle)
   const tagsList = parseTags(product.ingredients_tags, maxItems);
   if (tagsList.length) return tagsList;
   const text = getFallbackIngredientText(product);

@@ -1,19 +1,32 @@
-﻿const API_BASE = '';  // mÃªme origine (FastAPI sert le front)
-const comparisonMetrics = [
+﻿const API_BASE = '';  // même origine (FastAPI sert le front)
 
-  { label: 'Calories', key: 'energy_kcal_100g', unit: 'kcal', icon: 'flame', better: 'lower' },
+// Debounce helper
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
 
-  { label: 'Lipides', key: 'fat_100g', unit: 'g', icon: 'droplets', better: 'lower' },
-
-  { label: 'Glucides', key: 'carbohydrates_100g', unit: 'g', icon: 'wheat', better: 'lower' },
-
-  { label: 'Sucres', key: 'sugars_100g', unit: 'g', icon: 'candy', better: 'lower' },
-
-  { label: 'Protéines', key: 'proteins_100g', unit: 'g', icon: 'dumbbell', better: 'higher' },
-
-  { label: 'Sel', key: 'salt_100g', unit: 'g', icon: 'circle-dot', better: 'lower' },
-
+const allComparisonMetrics = [
+  // Macronutriments
+  { label: 'Calories', key: 'energy_kcal_100g', unit: 'kcal', icon: 'flame', better: 'lower', category: 'macro', default: true },
+  { label: 'Lipides', key: 'fat_100g', unit: 'g', icon: 'droplets', better: 'lower', category: 'macro', default: true },
+  { label: 'Acides gras saturés', key: 'saturated_fat_100g', unit: 'g', icon: 'activity', better: 'lower', category: 'macro', default: false },
+  { label: 'Glucides', key: 'carbohydrates_100g', unit: 'g', icon: 'wheat', better: 'lower', category: 'macro', default: true },
+  { label: 'Sucres', key: 'sugars_100g', unit: 'g', icon: 'candy', better: 'lower', category: 'macro', default: true },
+  { label: 'Fibres', key: 'fiber_100g', unit: 'g', icon: 'leaf', better: 'higher', category: 'macro', default: false },
+  { label: 'Protéines', key: 'proteins_100g', unit: 'g', icon: 'dumbbell', better: 'higher', category: 'macro', default: true },
+  { label: 'Sel', key: 'salt_100g', unit: 'g', icon: 'circle-dot', better: 'lower', category: 'macro', default: true },
+  // Minéraux
+  { label: 'Calcium', key: 'calcium_100g', unit: 'mg', icon: 'bone', better: 'higher', category: 'mineral', default: false },
+  { label: 'Fer', key: 'iron_100g', unit: 'mg', icon: 'droplet', better: 'higher', category: 'mineral', default: false },
+  { label: 'Potassium', key: 'potassium_100g', unit: 'mg', icon: 'zap', better: 'higher', category: 'mineral', default: false },
 ];
+
+// Initialiser avec les métriques par défaut
+const comparisonMetrics = allComparisonMetrics.filter(m => m.default);
 
 const nutriScoreOrder = { a: 5, b: 4, c: 3, d: 2, e: 1 };
 
@@ -66,14 +79,16 @@ function getIngredientsListSafe(product, maxItems = null) {
 
 
 // â”€â”€â”€ Ã‰tat global â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-let allProducts = [];          // rÃ©sultats bruts de l'API
-let activeGrades = new Set();  // nutriscore sÃ©lectionnÃ©s
+let allProducts = [];          // resultats bruts de l'API
+let activeGrades = new Set();  // nutriscore selectionnes
 
 // â”€â”€â”€ Helpers donnÃ©es â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // validGrade() et parseTags() sont dÃ©finis dans utils.js
 
 // â”€â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 document.addEventListener('DOMContentLoaded', () => {
+  const hasUrlParams = initializeFromURL();
+
   document.querySelectorAll('#nutriFilters button').forEach(btn => {
     btn.addEventListener('click', () => {
       const grade = btn.dataset.grade;
@@ -93,25 +108,58 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('searchBrand').addEventListener('input', debounce(fetchAndRender, 500));
-  document
-    .getElementById('searchIngredient')
-    .addEventListener('input', debounce(fetchAndRender, 500));
+
+  // Si on arrive avec un paramètre URL (ingredient ou category), lancer la recherche automatiquement
+  if (hasUrlParams) {
+    fetchAndRender();
+  }
 });
 
 // â”€â”€â”€ Fetch API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+let tagsearch = null; // ingredient ou category passé par URL
+let tagsearchType = null;   // 'ingredient' ou 'category'
+
+// Lire les paramètres URL au chargement
+function initializeFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  const ingredient = params.get('ingredient');
+  const category = params.get('category');
+
+  if (ingredient) {
+    tagsearch = ingredient;
+    tagsearchType = 'ingredient';
+    document.getElementById('searchName').value = ingredient;
+    return true;
+  } else if (category) {
+    tagsearch = category;
+    tagsearchType = 'category';
+    document.getElementById('searchName').value = category;
+    return true;
+  }
+  return false;
+}
+
 async function fetchAndRender() {
   const name       = document.getElementById('searchName').value.trim();
   const brand      = document.getElementById('searchBrand').value.trim();
-  const ingredient = document.getElementById('searchIngredient').value.trim();
 
   showLoading();
   hideError();
 
   try {
     const params = new URLSearchParams();
-    if (name)       params.append('q', name);
-    if (brand)      params.append('brand', brand);
-    if (ingredient) params.append('ingredients', ingredient);
+    if (name) {
+      // Si on vient d'une URL (ingredient/category), envoyer le bon paramètre
+      if (tagsearchType === 'ingredient') {
+        params.append('ingredient', name);
+      } else if (tagsearchType === 'category') {
+        params.append('category', name);
+      } else {
+        // Sinon c'est une recherche manuelle par nom
+        params.append('q', name);
+      }
+    }
+    if (brand) params.append('brand', brand);
 
     const res = await fetch(`${API_BASE}/products?${params}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -165,6 +213,15 @@ function renderProducts(products) {
   resultsDiv.innerHTML = displayable.map(p => {
     const ns = validGrade(p.nutriscore_grade);
     const es = validGrade(p.ecoscore_grade);
+    const categoryBadges = (p.categories || [])
+      .slice(0, 2)
+      .map(cat => {
+        // Support ancien format (string) et nouveau format (objet)
+        const displayName = typeof cat === 'string' ? cat : (cat.child || cat.display || '');
+        return `<span class="category-badge">${escHtml(displayName)}</span>`;
+      })
+      .join('');
+
     return `
       <div class="product-card">
         <div class="product-check">
@@ -178,6 +235,7 @@ function renderProducts(products) {
         <div class="product-info">
           <h3>${escHtml(p.product_name)}</h3>
           <p>${escHtml(p.brands || 'Sans marque')}</p>
+          ${categoryBadges ? `<div class="product-categories">${categoryBadges}</div>` : ''}
           <div class="product-meta">
             <span>${p.energy_kcal_100g != null ? Math.round(p.energy_kcal_100g) + ' kcal' : '—'}</span>
             ${ns ? `<span class="badge ns-${ns}">${ns.toUpperCase()}</span>` : ''}
@@ -261,44 +319,17 @@ async function comparerProduits() {
     `;
   }).join('');
 
-  const vitCKeywords = ['vitamin c', 'vitamine c', 'ascorbic acid', 'acide ascorbique', 'ascorbate'];
-  const hasVitaminC = tag => vitCKeywords.some(keyword => tag.toLowerCase().includes(keyword));
-
-  const parsedIngredients = details.map(p => getIngredientsListSafe(p, 20));
-  const vitCIngredients = parsedIngredients.map(list => list.filter(hasVitaminC));
-  const positiveCounts = parsedIngredients.map(list => list.length).filter(count => count > 0);
-  const bestIngredientCount = positiveCounts.length ? Math.min(...positiveCounts) : null;
-  const maxVitaminCCount = Math.max(...vitCIngredients.map(list => list.length));
-
-  const ingredientRow = `
-    <div class="compare-row ingredient-row">
-      <div class="compare-field-col">Ingrédients</div>
-      ${parsedIngredients
-        .map((list, index) => {
-          const vitc = vitCIngredients[index];
-          const others = list.filter(tag => !hasVitaminC(tag));
-
-          const parts = [];
-          if (vitc.length) {
-            parts.push(
-              `<span class="ingredient-vitc"><strong>Vit C :</strong> ${escHtml(vitc.join(', '))}</span>`
-            );
-          }
-          if (others.length) parts.push(escHtml(others.join(', ')));
-          if (!parts.length) parts.push('—');
-
-          const isBest =
-            bestIngredientCount !== null &&
-            parsedIngredients[index].length === bestIngredientCount &&
-            parsedIngredients[index].length > 0;
-
-          const hasVitC = vitc.length > 0;
-          const vitcHighlight =
-            hasVitC && vitc.length === maxVitaminCCount && maxVitaminCCount > 0 ? ' vitc' : '';
-
-          return `<div class="compare-val-col ingredient-val${isBest ? ' best' : ''}${vitcHighlight}">${parts.join(
-            '<br>'
-          )}</div>`;
+  const categoryRow = `
+    <div class="compare-row">
+      <div class="compare-field-col">Catégories</div>
+      ${details
+        .map(p => {
+          const cats = (p.categories || []).slice(0, 2).map(cat => {
+            // Support ancien format (string) et nouveau format (objet)
+            if (typeof cat === 'string') return cat;
+            return cat.child || cat.display || cat;
+          }).join(', ') || '—';
+          return `<div class="compare-val-col" style="text-align: left; font-size: 13px;">${escHtml(cats)}</div>`;
         })
         .join('')}
     </div>
@@ -307,12 +338,133 @@ async function comparerProduits() {
   const metricStats = computeMetricStats(details);
   const nutriStats = computeNutriScoreStats(details);
   const healthScores = computeHealthScores(details, metricStats, nutriStats);
-  const summarySection = renderSummarySection(metricStats, nutriStats, healthScores);
+  const insightsSection = renderInsightsSection(details, metricStats, healthScores);
 
-  document.getElementById('compareContent').innerHTML = header + rows + ingredientRow + summarySection;
+  document.getElementById('compareContent').innerHTML = header + rows + categoryRow + insightsSection;
+
+  // Générer le graphique radar
+  createRadarChart(details, comparisonMetrics);
+
   document.getElementById('compareModal').style.display = 'flex';
 
   lucide.createIcons();
+}
+
+let radarChartInstance = null;
+
+function createRadarChart(products, metrics) {
+  const container = document.getElementById('radarChartContainer');
+  const canvas = document.getElementById('radarChart');
+
+  if (!container || !canvas) return;
+
+  // Détruire l'ancien graphique s'il existe
+  if (radarChartInstance) {
+    radarChartInstance.destroy();
+    radarChartInstance = null;
+  }
+
+  // Préparer les labels (noms des métriques)
+  const labels = metrics.map(m => m.label);
+
+  // Préparer les datasets (un par produit)
+  const colors = [
+    { bg: 'rgba(79, 70, 229, 0.2)', border: 'rgb(79, 70, 229)' },    // Indigo
+    { bg: 'rgba(16, 185, 129, 0.2)', border: 'rgb(16, 185, 129)' },  // Green
+    { bg: 'rgba(245, 158, 11, 0.2)', border: 'rgb(245, 158, 11)' },  // Amber
+    { bg: 'rgba(239, 68, 68, 0.2)', border: 'rgb(239, 68, 68)' }     // Red
+  ];
+
+  const datasets = products.map((product, idx) => {
+    // Normaliser chaque métrique sur 0-100
+    const data = metrics.map(metric => {
+      const value = product[metric.key];
+      if (value == null) return 0;
+
+      // Pour les métriques "lower is better", inverser le score
+      // On normalise à partir des valeurs de tous les produits pour cette métrique
+      const allValues = products.map(p => p[metric.key]).filter(v => v != null);
+      if (allValues.length === 0) return 0;
+
+      const min = Math.min(...allValues);
+      const max = Math.max(...allValues);
+
+      if (max === min) return 50; // Si tous identiques, 50%
+
+      // Normaliser 0-100
+      let normalized = ((value - min) / (max - min)) * 100;
+
+      // Si "better = lower", inverser
+      if (metric.better === 'lower') {
+        normalized = 100 - normalized;
+      }
+
+      return Math.round(normalized);
+    });
+
+    return {
+      label: product.product_name || 'Sans nom',
+      data: data,
+      backgroundColor: colors[idx % colors.length].bg,
+      borderColor: colors[idx % colors.length].border,
+      borderWidth: 2,
+      pointBackgroundColor: colors[idx % colors.length].border,
+      pointBorderColor: '#fff',
+      pointHoverBackgroundColor: '#fff',
+      pointHoverBorderColor: colors[idx % colors.length].border
+    };
+  });
+
+  // Créer le graphique
+  radarChartInstance = new Chart(canvas, {
+    type: 'radar',
+    data: {
+      labels: labels,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      scales: {
+        r: {
+          beginAtZero: true,
+          max: 100,
+          ticks: {
+            stepSize: 20,
+            callback: function(value) {
+              return value + '%';
+            }
+          },
+          pointLabels: {
+            font: {
+              size: 12,
+              weight: 'bold'
+            }
+          }
+        }
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            padding: 15,
+            font: {
+              size: 13
+            }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return context.dataset.label + ': ' + context.parsed.r + '%';
+            }
+          }
+        }
+      }
+    }
+  });
+
+  container.style.display = 'block';
 }
 function buildSummary(fields, products) {
   const lines = fields.map(field => {
@@ -396,65 +548,159 @@ function computeHealthScores(products, metricStats, nutriStats) {
   });
 }
 
-function renderSummarySection(metricStats, nutriStats, healthScores) {
-  const rows = metricStats.map(stat => ({
-    label: `${stat.label} (${stat.unit})`,
-    min: stat.min != null ? Math.round(stat.min * 100) / 100 : '-',
-    max: stat.max != null ? Math.round(stat.max * 100) / 100 : '-',
-    avg: stat.avg != null ? Math.round(stat.avg * 100) / 100 : '-',
-  }));
+function renderInsightsSection(products, metricStats, healthScores) {
+  const ranking = [...healthScores].sort((a, b) => b.score - a.score);
 
-  rows.push({
-    label: 'Nutri-score (num)',
-    min: nutriStats.min != null ? nutriStats.min.toFixed(2) : '-',
-    max: nutriStats.max != null ? nutriStats.max.toFixed(2) : '-',
-    avg: nutriStats.avg != null ? nutriStats.avg.toFixed(2) : '-',
+  // 1. Podium global
+  let podiumHtml = '<div class="ranking-podium">';
+
+  ranking.forEach((entry, index) => {
+    const rank = index + 1;
+    const medalIcons = {
+      1: { icon: 'trophy', color: 'gold' },
+      2: { icon: 'medal', color: 'silver' },
+      3: { icon: 'award', color: 'bronze' },
+    };
+
+    if (rank <= 3) {
+      const medal = medalIcons[rank];
+      podiumHtml += `
+        <div class="medal-slot rank-${rank}">
+          <i data-lucide="${medal.icon}" class="medal-icon ${medal.color}"></i>
+          <strong>${escHtml(entry.product.product_name || 'Sans nom')}</strong>
+          <span class="score">${entry.score.toFixed(1)}%</span>
+        </div>
+      `;
+    }
   });
 
-  const ranking = [...healthScores].sort((a, b) => b.score - a.score);
-  const rankingHtml = ranking.length
-    ? `
-      <ol>
-        ${ranking
-          .map((entry, index) => `<li>${index + 1}. ${escHtml(entry.product.product_name || 'Sans nom')}</li>`)
-          .join('')}
-      </ol>
-    `
-    : '<span>-</span>';
+  podiumHtml += '</div>';
 
-  const rowHtml = rows
-    .map((row, index) => `
-      <tr>
-        <td>${row.label}</td>
-        <td>${row.min}</td>
-        <td>${row.max}</td>
-        <td>${row.avg}</td>
-        ${index === 0 ? `<td class="agg-ranking-cell" rowspan="${rows.length}">${rankingHtml}</td>` : ''}
-      </tr>
-    `)
-    .join('');
+  // Remaining ranks si > 3 produits
+  if (ranking.length > 3) {
+    podiumHtml += '<div class="ranking-rest">';
+    for (let i = 3; i < ranking.length; i++) {
+      const entry = ranking[i];
+      podiumHtml += `<div class="rank-item">
+        ${i + 1}. ${escHtml(entry.product.product_name || 'Sans nom')} (${entry.score.toFixed(1)}%)
+      </div>`;
+    }
+    podiumHtml += '</div>';
+  }
+
+  // 2. Générer insights automatiques
+  const insights = [];
+
+  // Meilleur en protéines
+  const proteinMetric = metricStats.find(m => m.key === 'proteins_100g');
+  if (proteinMetric) {
+    const bestProtein = products.reduce((best, p) =>
+      (p.proteins_100g || 0) > (best.proteins_100g || 0) ? p : best
+    , products[0]);
+    if (bestProtein.proteins_100g > 0) {
+      insights.push({
+        icon: 'dumbbell',
+        color: '#10b981',
+        title: 'Meilleur en protéines',
+        text: `${bestProtein.product_name || 'Sans nom'} avec ${bestProtein.proteins_100g.toFixed(1)}g/100g`
+      });
+    }
+  }
+
+  // Moins calorique
+  const calorieMetric = metricStats.find(m => m.key === 'energy_kcal_100g');
+  if (calorieMetric && calorieMetric.min != null) {
+    const lowestCal = products.find(p => p.energy_kcal_100g === calorieMetric.min);
+    if (lowestCal) {
+      insights.push({
+        icon: 'flame',
+        color: '#6366f1',
+        title: 'Moins calorique',
+        text: `${lowestCal.product_name || 'Sans nom'} avec ${Math.round(lowestCal.energy_kcal_100g)} kcal/100g`
+      });
+    }
+  }
+
+  // Attention au sucre
+  const sugarMetric = metricStats.find(m => m.key === 'sugars_100g');
+  if (sugarMetric && sugarMetric.max != null && sugarMetric.max > 10) {
+    const highestSugar = products.find(p => p.sugars_100g === sugarMetric.max);
+    if (highestSugar) {
+      insights.push({
+        icon: 'candy',
+        color: '#f59e0b',
+        title: 'Attention au sucre',
+        text: `${highestSugar.product_name || 'Sans nom'} contient ${highestSugar.sugars_100g.toFixed(1)}g/100g`
+      });
+    }
+  }
+
+  // Riche en fibres
+  const fiberMetric = metricStats.find(m => m.key === 'fiber_100g');
+  if (fiberMetric && fiberMetric.max != null && fiberMetric.max > 2) {
+    const highestFiber = products.find(p => p.fiber_100g === fiberMetric.max);
+    if (highestFiber) {
+      insights.push({
+        icon: 'leaf',
+        color: '#22c55e',
+        title: 'Riche en fibres',
+        text: `${highestFiber.product_name || 'Sans nom'} avec ${highestFiber.fiber_100g.toFixed(1)}g/100g`
+      });
+    }
+  }
+
+  // Attention au sel
+  const saltMetric = metricStats.find(m => m.key === 'salt_100g');
+  if (saltMetric && saltMetric.max != null && saltMetric.max > 1) {
+    const highestSalt = products.find(p => p.salt_100g === saltMetric.max);
+    if (highestSalt) {
+      insights.push({
+        icon: 'circle-dot',
+        color: '#ef4444',
+        title: 'Attention au sel',
+        text: `${highestSalt.product_name || 'Sans nom'} contient ${highestSalt.salt_100g.toFixed(2)}g/100g`
+      });
+    }
+  }
+
+  // Limiter à 4 insights
+  const topInsights = insights.slice(0, 4);
+
+  const insightsHtml = topInsights.map(insight => `
+    <div class="insight-card" style="border-left: 4px solid ${insight.color}">
+      <div class="insight-header">
+        <i data-lucide="${insight.icon}" style="width: 20px; height: 20px; stroke: ${insight.color}"></i>
+        <strong>${insight.title}</strong>
+      </div>
+      <div class="insight-text">${insight.text}</div>
+    </div>
+  `).join('');
 
   return `
-    <div class="summary-section">
-      <h3>Agrégation</h3>
-      <div class="agg-table-wrap">
-        <table class="agg-table">
-          <thead>
-            <tr>
-              <th>Mesure</th>
-              <th>Min</th>
-              <th>Max</th>
-              <th>Moyenne</th>
-              <th>Classement santé</th>
-            </tr>
-          </thead>
-          <tbody>${rowHtml}</tbody>
-        </table>
+    <div class="insights-section">
+      <h3 style="margin: 24px 0 12px; font-size: 18px; color: #1f2937; display: flex; align-items: center; gap: 8px;">
+        <i data-lucide="trophy" style="width: 20px; height: 20px; stroke: #f59e0b;"></i>
+        Classement global
+      </h3>
+      ${podiumHtml}
+
+      <h3 style="margin: 24px 0 12px; font-size: 18px; color: #1f2937; display: flex; align-items: center; gap: 8px;">
+        <i data-lucide="lightbulb" style="width: 20px; height: 20px; stroke: #4f46e5;"></i>
+        Points clés
+      </h3>
+      <div class="insights-grid">
+        ${insightsHtml}
       </div>
     </div>
   `;
 }
 function fermerComparaison() {
+  // Détruire le graphique radar
+  if (radarChartInstance) {
+    radarChartInstance.destroy();
+    radarChartInstance = null;
+  }
+  document.getElementById('radarChartContainer').style.display = 'none';
   document.getElementById('compareModal').style.display = 'none';
 }
 
@@ -503,8 +749,89 @@ function escAttr(str) {
   return encodeURIComponent(str);
 }
 
-function debounce(fn, wait) {
-  let t;
-  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+// ─── Métrique selection ────────────────────────────────────────────────────────────────
+
+function loadSelectedMetrics() {
+  const saved = localStorage.getItem('selectedMetrics');
+  if (!saved) {
+    return allComparisonMetrics.filter(m => m.default).map(m => m.key);
+  }
+  return JSON.parse(saved);
 }
 
+function updateComparisonMetrics(selectedKeys) {
+  const metrics = allComparisonMetrics.filter(m => selectedKeys.includes(m.key));
+  // Replace comparisonMetrics array contents
+  comparisonMetrics.length = 0;
+  comparisonMetrics.push(...metrics);
+  localStorage.setItem('selectedMetrics', JSON.stringify(selectedKeys));
+}
+
+function toggleMetricsSelector() {
+  const modal = document.getElementById('metricsModal');
+  const selected = loadSelectedMetrics();
+
+  const metricsByCategory = {};
+  allComparisonMetrics.forEach(m => {
+    if (!metricsByCategory[m.category]) metricsByCategory[m.category] = [];
+    metricsByCategory[m.category].push(m);
+  });
+
+  let html = '';
+  for (const [category, metrics] of Object.entries(metricsByCategory)) {
+    const catLabel = category === 'macro' ? 'Macronutriments' : 'Minéraux';
+    html += `<div style="margin-bottom: 16px;">
+      <h4 style="margin: 0 0 8px; font-size: 14px; font-weight: 600; color: #475467;">${catLabel}</h4>
+      <div style="display: flex; flex-direction: column; gap: 6px;">`;
+
+    metrics.forEach(m => {
+      const checked = selected.includes(m.key) ? 'checked' : '';
+      html += `<label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px;">
+        <input type="checkbox" class="metric-checkbox" value="${m.key}" ${checked} data-label="${m.label}">
+        <span>${m.label} (${m.unit})</span>
+      </label>`;
+    });
+
+    html += `</div></div>`;
+  }
+
+  document.getElementById('metricsContent').innerHTML = html;
+  modal.style.display = 'flex';
+  lucide.createIcons();
+}
+
+function fermerMetricsSelector() {
+  const selected = Array.from(document.querySelectorAll('.metric-checkbox:checked'))
+    .map(cb => cb.value);
+
+  if (selected.length === 0) {
+    alert('Sélectionnez au moins une métrique');
+    return;
+  }
+
+  updateComparisonMetrics(selected);
+  document.getElementById('metricsModal').style.display = 'none';
+}
+
+function resetMetricsSelection() {
+  document.querySelectorAll('.metric-checkbox').forEach(cb => {
+    const m = allComparisonMetrics.find(m => m.key === cb.value);
+    cb.checked = m && m.default;
+  });
+}
+
+// Init metrics
+(function initMetrics() {
+  const selected = loadSelectedMetrics();
+  updateComparisonMetrics(selected);
+})();
+
+// Init from URL params (if coming from tag click on detail page)
+(function initFromUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  const ingredient = params.get('ingredient');
+  if (ingredient) {
+    tagsearch = ingredient;
+    fetchAndRender();
+  }
+})();

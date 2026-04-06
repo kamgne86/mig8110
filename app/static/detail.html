@@ -18,8 +18,6 @@
       <div class="detail-body panel-body">
         <p class="detail-meta">
           <strong id="brand">—</strong>
-          <span> | </span>
-          <span id="category">—</span>
         </p>
 
         <div class="scores-row">
@@ -56,6 +54,11 @@
             <span>IMAGE</span>
           </div>
         </div>
+
+        <div class="separator"></div>
+
+        <h3 class="detail-section-title">Catégories</h3>
+        <div id="categoriesList" class="tags-section">—</div>
 
         <div id="rawJsonSection" style="display:none; margin-top:20px;">
           <div class="separator"></div>
@@ -102,10 +105,7 @@
     function fillFromProduct(p) {
       document.title = p.product_name || 'Détail produit';
       document.getElementById('name').textContent  = p.product_name || 'Sans nom';
-      document.getElementById('brand').textContent = p.brands || '—';
-
-      // categories_tags : "['en:sweeteners', 'en:syrups']" → on prend les 3 premières
-      document.getElementById('category').textContent = parseTags(p.categories_tags, 3).join(', ') || '—';
+      document.getElementById('brand').textContent = p.brands || 'Sans marque';
 
       // Nutri-Score
       const nsGrade = validGrade(p.nutriscore_grade);
@@ -128,9 +128,49 @@
       document.getElementById('carbs').textContent     = val(p.carbohydrates_100g, 'g');
       document.getElementById('fiber').textContent     = val(p.fiber_100g, 'g');
 
-      // Ingrédients : pas de champ texte libre → on parse ingredients_tags
+      // Ingrédients : tableau ingredient_name renvoyé par l'API → afficher comme tags cliquables
       const ingredientsList = getIngredientsList(p);
-      document.getElementById('ingredients').textContent = ingredientsList.length ? ingredientsList.join(', ') : '—';
+      if (ingredientsList && ingredientsList.length) {
+        try {
+          document.getElementById('ingredients').innerHTML = ingredientsList
+            .map(ing => `<a href="/static/index.html?ingredient=${encodeURIComponent(ing)}" class="tag-link">${escHtml(ing)}</a>`)
+            .join('');
+        } catch (err) {
+          console.error('Erreur ingrédients:', err);
+          document.getElementById('ingredients').textContent = ingredientsList.join(', ');
+        }
+      } else {
+        document.getElementById('ingredients').textContent = '—';
+      }
+
+      // Catégories : afficher comme tags cliquables avec hiérarchie
+      if (p.categories && p.categories.length) {
+        try {
+          document.getElementById('categoriesList').innerHTML = p.categories
+            .map(cat => {
+              // cat peut être string (ancien format) ou objet (nouveau format)
+              if (typeof cat === 'string') {
+                return `<a href="/static/index.html?category=${encodeURIComponent(cat)}" class="tag-link">${escHtml(cat)}</a>`;
+              } else if (cat && typeof cat === 'object') {
+                // Nouveau format avec parent/child
+                const displayChild = cat.child || cat.display || '';
+                const hasParent = cat.parent && cat.parent !== null;
+                return `<a href="/static/index.html?category=${encodeURIComponent(displayChild)}" class="tag-link${hasParent ? ' category-hierarchical' : ''}">
+                  ${hasParent ? `<span class="cat-parent">${escHtml(cat.parent)}</span><span class="cat-separator">›</span>` : ''}
+                  <span class="cat-child">${escHtml(displayChild)}</span>
+                </a>`;
+              }
+              return '';
+            })
+            .filter(x => x)
+            .join('');
+        } catch (err) {
+          console.error('Erreur catégories:', err);
+          document.getElementById('categoriesList').textContent = 'Erreur affichage catégories';
+        }
+      } else {
+        document.getElementById('categoriesList').textContent = '—';
+      }
 
       if (p.front_url) {
         const box = document.getElementById('imageBox');

@@ -132,6 +132,9 @@ body {
   cursor: pointer;
   font-size: 14px;
   transition: background .15s;
+  white-space: nowrap;
+  padding: 6px 10px;
+  width: auto;
 }
 
 .quick-filters button:hover { background: #9ca3af; }
@@ -245,6 +248,70 @@ input[type="range"] { width: 100%; accent-color: #4f46e5; }
   flex-wrap: wrap;
   font-size: 13px;
   color: #475467;
+}
+
+.product-categories {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.category-badge {
+  display: inline-block;
+  background: #e0e7ff;
+  color: #4f46e5;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ─── Tag links on detail page ──────────────────────────────────────────── */
+.tags-section {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-link {
+  display: inline-block;
+  background: #e0e7ff;
+  color: #4f46e5;
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.tag-link:hover {
+  background: #c7d2fe;
+  color: #3730a3;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
+}
+
+/* Hiérarchie catégories */
+.tag-link.category-hierarchical {
+  padding: 8px 14px;
+}
+
+.cat-parent {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.cat-separator {
+  margin: 0 4px;
+  opacity: 0.5;
+}
+
+.cat-child {
+  font-weight: 600;
 }
 
 /* ─── Badges nutriscore / ecoscore ──────────────────────────────────────────── */
@@ -594,16 +661,96 @@ input[type="range"] { width: 100%; accent-color: #4f46e5; }
 }
 
 .agg-ranking-cell {
-  min-width: 260px;
+  min-width: 300px;
   vertical-align: top !important;
   background: #f8fafc;
 }
 
-.agg-ranking-cell ol {
-  margin: 0;
-  padding-left: 18px;
+.ranking-podium {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.medal-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff;
+  border: 2px solid #e5e7eb;
+  text-align: center;
+  min-height: 140px;
+  justify-content: center;
+}
+
+.medal-slot.rank-1 {
+  border-color: #FFD700;
+  background: #fffbf0;
+  order: 2;
+}
+.medal-slot.rank-2 {
+  border-color: #C0C0C0;
+  background: #f8f9fa;
+  order: 1;
+}
+.medal-slot.rank-3 {
+  border-color: #CD7F32;
+  background: #fffaf8;
+  order: 3;
+}
+
+.medal-icon {
+  width: 32px;
+  height: 32px;
+  stroke-width: 1.5;
+}
+
+.medal-icon.gold {
+  stroke: #FFD700;
+  color: #FFD700;
+}
+.medal-icon.silver {
+  stroke: #C0C0C0;
+  color: #C0C0C0;
+}
+.medal-icon.bronze {
+  stroke: #CD7F32;
+  color: #CD7F32;
+}
+
+.medal-slot strong {
+  font-size: 13px;
+  color: #1f2937;
+  line-height: 1.3;
+}
+
+.medal-slot .score {
+  font-weight: 700;
+  font-size: 14px;
+  background: #eef2ff;
+  color: #4f46e5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.ranking-rest {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rank-item {
+  font-size: 13px;
+  color: #475467;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
 }
 
 .stat-grid {
@@ -702,6 +849,46 @@ input[type="range"] { width: 100%; accent-color: #4f46e5; }
 .compare-summary li {
   font-size: 14px;
   color: #475467;
+}
+
+/* ─── Insights section ────────────────────────────────────────────────────── */
+.insights-section {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #dfe3ea;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.insights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.insight-card {
+  background: #fff;
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.insight-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.insight-text {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.5;
 }
 
 /* ─── Responsive ────────────────────────────────────────────────────────────── */

@@ -6,6 +6,7 @@
   <title>FoodHealth Advisor</title>
   <link rel="stylesheet" href="/static/css/style.css?v=20260329_1" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <div class="page">
@@ -18,7 +19,6 @@
         <div class="search-row">
           <input type="text" id="searchName" placeholder="Rechercher par nom produit ..." />
           <input type="text" id="searchBrand" placeholder="Marque..." />
-          <input type="text" id="searchIngredient" placeholder="Ingrédient ou composant..." />
           <button onclick="fetchAndRender()">Rechercher</button>
         </div>
 
@@ -75,6 +75,7 @@
           <button class="small-btn compare-btn" onclick="comparerProduits()">Comparer</button>
           <div class="right-buttons">
             <button class="small-btn" onclick="resetFilters()">Réinitialiser</button>
+            <button class="small-btn" onclick="toggleMetricsSelector()">Métriques</button>
           </div>
         </div>
 
@@ -95,7 +96,27 @@
         <button class="modal-close" onclick="fermerComparaison()">✕</button>
       </div>
       <div class="modal-body">
+        <div id="radarChartContainer" style="max-width: 600px; margin: 0 auto 24px; display: none;">
+          <canvas id="radarChart"></canvas>
+        </div>
         <div id="compareContent" class="compare-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics selector modal -->
+  <div id="metricsModal" class="modal" style="display:none;">
+    <div class="modal-box" style="max-width: 500px;">
+      <div class="modal-header">
+        <h2>Sélectionner les métriques</h2>
+        <button class="modal-close" onclick="fermerMetricsSelector()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="metricsContent"></div>
+        <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="small-btn" onclick="resetMetricsSelection()">Réinitialiser</button>
+          <button class="small-btn compare-btn" onclick="fermerMetricsSelector()">Appliquer</button>
+        </div>
       </div>
     </div>
   </div>
