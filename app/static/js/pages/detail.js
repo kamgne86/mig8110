@@ -18,6 +18,271 @@ async function loadProduct() {
   }
 }
 
+function getPrimaryCategory(product) {
+  if (!product || !Array.isArray(product.categories)) return '';
+
+  for (const cat of product.categories) {
+    if (typeof cat === 'string' && cat.trim()) return cat.trim();
+    if (cat && typeof cat === 'object') {
+      const value = String(cat.child || cat.display || '').trim();
+      if (value) return value;
+    }
+  }
+
+  return '';
+}
+
+function getTargetCategory(product) {
+  const labels = getCategoryLabels(product);
+  if (!labels.length) return '';
+
+  return labels
+    .slice()
+    .sort((a, b) => {
+      const wordDiff = b.split(/\s+/).length - a.split(/\s+/).length;
+      if (wordDiff !== 0) return wordDiff;
+      return b.length - a.length;
+    })[0];
+}
+
+function normalizeToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getCategoryLabels(product) {
+  if (!product || !Array.isArray(product.categories)) return [];
+
+  return product.categories
+    .map(cat => {
+      if (typeof cat === 'string') return cat;
+      if (cat && typeof cat === 'object') return cat.child || cat.display || '';
+      return '';
+    })
+    .map(label => String(label || '').trim())
+    .filter(Boolean);
+}
+
+function getTopIngredients(product, maxItems = 5) {
+  const source = Array.isArray(product?.ingredients) && product.ingredients.length
+    ? product.ingredients
+    : getIngredientsList(product, maxItems);
+
+  const out = [];
+  const seen = new Set();
+
+  for (const ing of source) {
+    const clean = String(ing || '').trim();
+    if (!clean) continue;
+    const key = normalizeToken(clean);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+    if (out.length >= maxItems) break;
+  }
+
+  return out;
+}
+
+function hasSameCategory(baseProduct, candidateProduct) {
+  const targetCategory = normalizeToken(getTargetCategory(baseProduct));
+  if (!targetCategory) return false;
+
+  const candidateCats = getCategoryLabels(candidateProduct).map(normalizeToken);
+  return candidateCats.includes(targetCategory);
+}
+
+function getIngredientSimilarity(baseProduct, candidateProduct) {
+  const baseTopIngredients = getTopIngredients(baseProduct, 5);
+  const candidateTopIngredients = getTopIngredients(candidateProduct, 5);
+
+  if (!baseTopIngredients.length || !candidateTopIngredients.length) {
+    return {
+      ratio: 0,
+      candidateTopIngredients,
+    };
+  }
+
+  let total = 0;
+
+  baseTopIngredients.forEach((ingredient, index) => {
+    const normalized = normalizeToken(ingredient);
+    const candidateIndex = candidateTopIngredients.findIndex(
+      candidateIngredient => normalizeToken(candidateIngredient) === normalized
+    );
+
+    if (candidateIndex === -1) return;
+    if (candidateIndex === index) {
+      total += 1;
+      return;
+    }
+
+    const distance = Math.abs(candidateIndex - index);
+    total += Math.max(0.35, 0.8 - (distance * 0.15));
+  });
+
+  return {
+    ratio: total / baseTopIngredients.length,
+    candidateTopIngredients,
+  };
+}
+
+function getNutrimentSimilarity(baseProduct, candidateProduct) {
+  const keys = [
+    'energy_kcal_100g',
+    'fat_100g',
+    'sugars_100g',
+    'salt_100g',
+    'proteins_100g',
+    'carbohydrates_100g'
+  ];
+
+  let total = 0;
+  let count = 0;
+
+  for (const key of keys) {
+    const a = Number(baseProduct?.[key]);
+    const b = Number(candidateProduct?.[key]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+
+    const diff = Math.abs(a - b);
+    const ref = Math.max(Math.abs(a), Math.abs(b), 1);
+    const score = Math.max(0, 1 - (diff / ref));
+
+    total += score;
+    count += 1;
+  }
+
+  if (!count) return 0;
+  return total / count;
+}
+
+function getSimilarityMeta(baseProduct, candidateProduct) {
+  const sameCategory = hasSameCategory(baseProduct, candidateProduct);
+  const ingredientSimilarity = getIngredientSimilarity(baseProduct, candidateProduct);
+  const nutrimentSimilarity = getNutrimentSimilarity(baseProduct, candidateProduct);
+
+  const totalScore = sameCategory
+    ? (0.6 * ingredientSimilarity.ratio) + (0.4 * nutrimentSimilarity)
+    : 0;
+
+  return {
+    sameCategory,
+    totalScore,
+    categoryLabel: getTargetCategory(candidateProduct) || '—',
+    topIngredients: ingredientSimilarity.candidateTopIngredients,
+    ingredientSimilarityPct: Math.round(ingredientSimilarity.ratio * 100),
+    nutrimentSimilarityPct: Math.round(nutrimentSimilarity * 100)
+  };
+}
+
+function renderSimilarCard(product, meta) {
+  const name = escHtml(product.product_name || 'Sans nom');
+  const brand = escHtml(product.brands || 'Sans marque');
+  const ingredientsText = meta.topIngredients.length
+    ? meta.topIngredients.map(escHtml).join(', ')
+    : '—';
+  const image = product.front_url
+    ? `<img src="${escHtml(product.front_url)}" alt="Image produit" loading="lazy" />`
+    : '<span>IMAGE</span>';
+
+  return `
+    <article class="similar-card">
+      <div class="similar-media">${image}</div>
+      <div class="similar-body">
+        <h4 class="similar-title">${name}</h4>
+        <p class="similar-brand">${brand}</p>
+        <div class="similar-grid">
+          <div class="similar-field">
+            <span class="similar-field-label">Categorie</span>
+            <span class="similar-field-value">${escHtml(meta.categoryLabel)}</span>
+          </div>
+          <div class="similar-field">
+            <span class="similar-field-label">5 premiers ingredients</span>
+            <span class="similar-field-value similar-ingredients">${ingredientsText}</span>
+          </div>
+          <div class="similar-field">
+            <span class="similar-field-label">Ingredients proches</span>
+            <span class="similar-field-value similar-score">${meta.ingredientSimilarityPct}%</span>
+          </div>
+          <div class="similar-field">
+            <span class="similar-field-label">Nutriments similaires</span>
+            <span class="similar-field-value similar-score">${meta.nutrimentSimilarityPct}%</span>
+          </div>
+        </div>
+      </div>
+      <a class="detail-btn" href="/static/detail.html?code=${escAttr(product.code)}">Voir detail</a>
+    </article>
+  `;
+}
+
+async function loadSimilarProducts(baseProduct) {
+  const container = document.getElementById('similarProducts');
+  if (!container) return;
+
+  const category = getTargetCategory(baseProduct);
+  if (!category) {
+    container.innerHTML = '<p class="empty-msg">Categorie manquante: impossible de calculer des produits similaires fiables.</p>';
+    return;
+  }
+
+  const params = new URLSearchParams();
+  params.set('category', category);
+  params.set('limit', '16');
+
+  try {
+    const rows = await fetchProducts(params);
+    const currentCode = String(baseProduct.code || '');
+
+    const seed = rows
+      .filter(item => item && item.code && String(item.code) !== currentCode)
+      .slice(0, 12);
+
+    const detailedCandidates = await Promise.all(
+      seed.map(async item => {
+        try {
+          return await fetchProduct(item.code);
+        } catch (err) {
+          console.warn('Impossible de charger le detail pour', item.code, err);
+          return null;
+        }
+      })
+    );
+
+    const ranked = detailedCandidates
+      .filter(Boolean)
+      .map(candidate => {
+        const meta = getSimilarityMeta(baseProduct, candidate);
+        return { candidate, meta };
+      })
+      .filter(entry => entry.meta.sameCategory)
+      .sort((a, b) => {
+        if (b.meta.totalScore !== a.meta.totalScore) {
+          return b.meta.totalScore - a.meta.totalScore;
+        }
+        return String(a.candidate.product_name || '').localeCompare(String(b.candidate.product_name || ''));
+      })
+      .slice(0, 4);
+
+    if (!ranked.length) {
+      container.innerHTML = '<p class="empty-msg">Aucun produit similaire trouve.</p>';
+      return;
+    }
+
+    container.innerHTML = ranked
+      .map(entry => renderSimilarCard(entry.candidate, entry.meta))
+      .join('');
+  } catch (error) {
+    container.innerHTML = '<p class="empty-msg">Erreur lors du chargement des produits similaires.</p>';
+    console.error(error);
+  }
+}
+
 function fillFromProduct(p) {
   document.title = p.product_name || 'Détail produit';
   document.getElementById('name').textContent  = p.product_name || 'Sans nom';
@@ -131,6 +396,7 @@ function fillFromProduct(p) {
   }
 
   // Données brutes
+  loadSimilarProducts(p);
   document.getElementById('rawJsonSection').style.display = 'block';
   document.getElementById('rawJson').textContent = JSON.stringify(p, null, 2);
 }

@@ -491,6 +491,130 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
   overflow: hidden;
 }
 
+/* Similar products on detail page */
+.similar-products {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.similar-card {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.similar-media {
+  width: 96px;
+  min-height: 96px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #e5e7eb, #d8dde5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #667085;
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.similar-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.similar-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.similar-title {
+  margin: 0;
+  font-size: 15px;
+  color: #1f2937;
+  line-height: 1.3;
+}
+
+.similar-brand {
+  margin: 0;
+  font-size: 13px;
+  color: #667085;
+}
+
+.similar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.similar-field {
+  background: #ffffff;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.similar-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #667085;
+}
+
+.similar-field-value {
+  font-size: 13px;
+  color: #1f2937;
+}
+
+.similar-ingredients {
+  line-height: 1.35;
+}
+
+.similar-score {
+  font-weight: 700;
+  color: #0f766e;
+}
+
+.similar-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.similar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  border: 1px solid #e4e7ec;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #475467;
+}
+
+.similar-chip .badge {
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+.similar-card .detail-btn {
+  align-self: center;
+}
+
 /* ─── Compare modal ─────────────────────────────────────────────────────────── */
 .modal {
   position: fixed;
@@ -872,6 +996,17 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
 @media (max-width: 600px) {
   .ingredients-row  { flex-direction: column; }
   .detail-image-box { width: 100%; }
+  .similar-card {
+    flex-direction: column;
+  }
+  .similar-media {
+    width: 100%;
+    min-height: 160px;
+  }
+  .similar-card .detail-btn {
+    width: 100%;
+    text-align: center;
+  }
   .product-image    { width: 70px; height: 55px; }
   .compare-grid { padding: 8px 10px 14px; }
   .compare-header-row,
