@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260329_1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260402_1" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -57,6 +57,13 @@
           </div>
         </div>
 
+        <div class="separator"></div>
+
+        <h3 class="detail-section-title">Produits similaires</h3>
+        <div id="similarProducts" class="similar-products">
+          <p class="empty-msg">Chargement des produits similaires…</p>
+        </div>
+
         <div id="rawJsonSection" style="display:none; margin-top:20px;">
           <div class="separator"></div>
           <h3 class="detail-section-title">
@@ -98,6 +105,85 @@
     }
 
     // validGrade() et parseTags() sont définis dans utils.js
+    function escHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function similarSearchTerm(product) {
+      const category = parseTags(product.categories_tags, 1)[0] || '';
+      if (category) return category;
+
+      const words = String(product.product_name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length >= 3);
+
+      return words.slice(0, 2).join(' ');
+    }
+
+    async function loadSimilarProducts(product) {
+      const wrap = document.getElementById('similarProducts');
+      const q = similarSearchTerm(product);
+
+      if (!q) {
+        wrap.innerHTML = '<p class="empty-msg">Pas assez d’informations pour proposer des produits similaires.</p>';
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/products/?q=${encodeURIComponent(q)}&limit=12`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+
+        const currentBrand = String(product.brands || '').toLowerCase().trim();
+        const currentNutri = validGrade(product.nutriscore_grade);
+
+        const picks = rows
+          .filter(item => item.code && item.code !== product.code)
+          .map(item => ({
+            item,
+            rank: (
+              (currentBrand && String(item.brands || '').toLowerCase().includes(currentBrand) ? 3 : 0) +
+              (validGrade(item.nutriscore_grade) === currentNutri ? 1 : 0)
+            ),
+          }))
+          .sort((a, b) => b.rank - a.rank)
+          .slice(0, 4)
+          .map(x => x.item);
+
+        if (!picks.length) {
+          wrap.innerHTML = '<p class="empty-msg">Aucun produit similaire trouvé.</p>';
+          return;
+        }
+
+        wrap.innerHTML = picks.map(item => {
+          const imageHtml = item.front_url
+            ? `<img src="${escHtml(item.front_url)}" alt="Image produit" style="width:100%;height:100%;object-fit:cover;" />`
+            : '<span>IMAGE</span>';
+
+          return `
+            <article class="similar-card">
+              <div class="similar-image">${imageHtml}</div>
+              <div class="similar-content">
+                <h4>${escHtml(item.product_name || 'Sans nom')}</h4>
+                <p>${escHtml(item.brands || 'Sans marque')}</p>
+                <span>${item.energy_kcal_100g != null ? `${Math.round(item.energy_kcal_100g)} kcal` : '—'}</span>
+              </div>
+              <a class="detail-btn" href="/static/detail.html?code=${encodeURIComponent(item.code)}">Voir détail</a>
+            </article>
+          `;
+        }).join('');
+      } catch (err) {
+        wrap.innerHTML = '<p class="empty-msg">Erreur lors du chargement des produits similaires.</p>';
+        console.error(err);
+      }
+    }
 
     function fillFromProduct(p) {
       document.title = p.product_name || 'Détail produit';
@@ -140,6 +226,8 @@
         img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:12px;';
         box.replaceChildren(img);
       }
+
+      loadSimilarProducts(p);
 
       // Données brutes
       document.getElementById('rawJsonSection').style.display = 'block';
