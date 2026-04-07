@@ -4,28 +4,26 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260402_1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260406" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
   <div class="page">
     <div class="detail-panel panel">
       <div class="detail-header panel-header">
-        <a href="/static/index.html" class="back-arrow">←</a>
+        <a href="/static/index.html" class="back-arrow">&#8592;</a>
         <h1 id="name">Chargement…</h1>
       </div>
 
       <div class="detail-body panel-body">
         <p class="detail-meta">
           <strong id="brand">—</strong>
-          <span> | </span>
-          <span id="category">—</span>
         </p>
 
         <div class="scores-row">
           <div class="score-line">
             <span class="nutri-label">Nutri-Score</span>
-            <span class="nutri-score" id="nutriScore">—</span>
+            <span id="nutriScore" class="nutri-score">—</span>
           </div>
           <div class="score-line">
             <span class="nutri-label eco">Éco-Score</span>
@@ -33,18 +31,29 @@
           </div>
         </div>
 
+        <div id="keyFacts" class="key-facts"></div>
+
         <div class="separator"></div>
 
         <h3 class="detail-section-title">Infos Nutritionnelles (pour 100g)</h3>
         <ul class="nutrition-details">
           <li><i data-lucide="flame"         class="nutri-icon"></i> Calories : <span id="calories">—</span></li>
+          <li><i data-lucide="wheat"          class="nutri-icon"></i> Glucides : <span id="carbs">—</span></li>
           <li><i data-lucide="candy"          class="nutri-icon"></i> Sucres : <span id="sugars">—</span></li>
-          <li><i data-lucide="circle-dot"     class="nutri-icon"></i> Sel : <span id="salt">—</span></li>
+          <li><i data-lucide="leaf"           class="nutri-icon"></i> Fibres : <span id="fiber">—</span></li>
           <li><i data-lucide="droplets"       class="nutri-icon"></i> Lipides : <span id="fat">—</span></li>
           <li><i data-lucide="activity"       class="nutri-icon"></i> Acides gras saturés : <span id="saturated">—</span></li>
+          <li><i data-lucide="triangle"       class="nutri-icon"></i> Acides gras trans : <span id="transFat">—</span></li>
+          <li><i data-lucide="heart"          class="nutri-icon"></i> Cholestérol : <span id="cholesterol">—</span></li>
           <li><i data-lucide="dumbbell"       class="nutri-icon"></i> Protéines : <span id="proteins">—</span></li>
-          <li><i data-lucide="wheat"          class="nutri-icon"></i> Glucides : <span id="carbs">—</span></li>
-          <li><i data-lucide="leaf"           class="nutri-icon"></i> Fibres : <span id="fiber">—</span></li>
+          <li><i data-lucide="circle-dot"     class="nutri-icon"></i> Sel : <span id="salt">—</span></li>
+        </ul>
+
+        <h3 class="detail-section-title" style="margin-top:16px;">Minéraux (pour 100g)</h3>
+        <ul class="nutrition-details">
+          <li><i data-lucide="bone"           class="nutri-icon"></i> Calcium : <span id="calcium">—</span></li>
+          <li><i data-lucide="droplet"        class="nutri-icon"></i> Fer : <span id="iron">—</span></li>
+          <li><i data-lucide="zap"            class="nutri-icon"></i> Potassium : <span id="potassium">—</span></li>
         </ul>
 
         <div class="separator"></div>
@@ -59,15 +68,13 @@
 
         <div class="separator"></div>
 
-        <h3 class="detail-section-title">Produits similaires</h3>
-        <div id="similarProducts" class="similar-products">
-          <p class="empty-msg">Chargement des produits similaires…</p>
-        </div>
+        <h3 class="detail-section-title">Catégories</h3>
+        <div id="categoriesList" class="tags-section">—</div>
 
         <div id="rawJsonSection" style="display:none; margin-top:20px;">
           <div class="separator"></div>
           <h3 class="detail-section-title">
-            <button class="small-btn" onclick="toggleRaw()">Voir données brutes ▼</button>
+            <button class="small-btn" onclick="toggleRaw()">Voir données brutes &#9660;</button>
           </h3>
           <pre id="rawJson" style="display:none; background:#f8fafc; padding:14px; border-radius:8px; overflow:auto; font-size:12px; color:#475467;"></pre>
         </div>
@@ -75,171 +82,9 @@
     </div>
   </div>
 
-  <script src="/static/js/utils.js?v=20260329_1"></script>
-  <script>
-    const API_BASE = '';  // même origine que le backend FastAPI
-
-    async function loadProduct() {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get('code');
-
-      if (!code) {
-        document.getElementById('name').textContent = 'Code produit manquant';
-        return;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE}/products/${code}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const p = await res.json();
-        fillFromProduct(p);
-      } catch (e) {
-        document.getElementById('name').textContent = 'Erreur de chargement';
-        console.error(e);
-      }
-    }
-
-    function val(v, unit = '', decimals = 2) {
-      if (v === null || v === undefined || v === '') return '—';
-      return (Math.round(v * 100) / 100).toFixed(decimals) + (unit ? ' ' + unit : '');
-    }
-
-    // validGrade() et parseTags() sont définis dans utils.js
-    function escHtml(str) {
-      return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function similarSearchTerm(product) {
-      const category = parseTags(product.categories_tags, 1)[0] || '';
-      if (category) return category;
-
-      const words = String(product.product_name || '')
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, ' ')
-        .split(/\s+/)
-        .filter(w => w.length >= 3);
-
-      return words.slice(0, 2).join(' ');
-    }
-
-    async function loadSimilarProducts(product) {
-      const wrap = document.getElementById('similarProducts');
-      const q = similarSearchTerm(product);
-
-      if (!q) {
-        wrap.innerHTML = '<p class="empty-msg">Pas assez d’informations pour proposer des produits similaires.</p>';
-        return;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE}/products/?q=${encodeURIComponent(q)}&limit=12`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const rows = await res.json();
-
-        const currentBrand = String(product.brands || '').toLowerCase().trim();
-        const currentNutri = validGrade(product.nutriscore_grade);
-
-        const picks = rows
-          .filter(item => item.code && item.code !== product.code)
-          .map(item => ({
-            item,
-            rank: (
-              (currentBrand && String(item.brands || '').toLowerCase().includes(currentBrand) ? 3 : 0) +
-              (validGrade(item.nutriscore_grade) === currentNutri ? 1 : 0)
-            ),
-          }))
-          .sort((a, b) => b.rank - a.rank)
-          .slice(0, 4)
-          .map(x => x.item);
-
-        if (!picks.length) {
-          wrap.innerHTML = '<p class="empty-msg">Aucun produit similaire trouvé.</p>';
-          return;
-        }
-
-        wrap.innerHTML = picks.map(item => {
-          const imageHtml = item.front_url
-            ? `<img src="${escHtml(item.front_url)}" alt="Image produit" style="width:100%;height:100%;object-fit:cover;" />`
-            : '<span>IMAGE</span>';
-
-          return `
-            <article class="similar-card">
-              <div class="similar-image">${imageHtml}</div>
-              <div class="similar-content">
-                <h4>${escHtml(item.product_name || 'Sans nom')}</h4>
-                <p>${escHtml(item.brands || 'Sans marque')}</p>
-                <span>${item.energy_kcal_100g != null ? `${Math.round(item.energy_kcal_100g)} kcal` : '—'}</span>
-              </div>
-              <a class="detail-btn" href="/static/detail.html?code=${encodeURIComponent(item.code)}">Voir détail</a>
-            </article>
-          `;
-        }).join('');
-      } catch (err) {
-        wrap.innerHTML = '<p class="empty-msg">Erreur lors du chargement des produits similaires.</p>';
-        console.error(err);
-      }
-    }
-
-    function fillFromProduct(p) {
-      document.title = p.product_name || 'Détail produit';
-      document.getElementById('name').textContent  = p.product_name || 'Sans nom';
-      document.getElementById('brand').textContent = p.brands || '—';
-
-      // categories_tags : "['en:sweeteners', 'en:syrups']" → on prend les 3 premières
-      document.getElementById('category').textContent = parseTags(p.categories_tags, 3).join(', ') || '—';
-
-      // Nutri-Score
-      const nsGrade = validGrade(p.nutriscore_grade);
-      const ns = document.getElementById('nutriScore');
-      ns.textContent = nsGrade ? nsGrade.toUpperCase() : '—';
-      ns.className   = nsGrade ? `nutri-score ns-${nsGrade}` : 'nutri-score';
-
-      // Éco-Score
-      const esGrade = validGrade(p.ecoscore_grade);
-      const es = document.getElementById('ecoScore');
-      es.textContent = esGrade ? esGrade.toUpperCase() : '—';
-      es.className   = esGrade ? `nutri-score eco es-${esGrade}` : 'nutri-score eco';
-
-      document.getElementById('calories').textContent  = val(p.energy_kcal_100g, 'kcal', 0);
-      document.getElementById('sugars').textContent    = val(p.sugars_100g, 'g');
-      document.getElementById('salt').textContent      = val(p.salt_100g, 'g');
-      document.getElementById('fat').textContent       = val(p.fat_100g, 'g');
-      document.getElementById('saturated').textContent = val(p.saturated_fat_100g, 'g');
-      document.getElementById('proteins').textContent  = val(p.proteins_100g, 'g');
-      document.getElementById('carbs').textContent     = val(p.carbohydrates_100g, 'g');
-      document.getElementById('fiber').textContent     = val(p.fiber_100g, 'g');
-
-      // Ingrédients : pas de champ texte libre → on parse ingredients_tags
-      const ingredientsList = getIngredientsList(p);
-      document.getElementById('ingredients').textContent = ingredientsList.length ? ingredientsList.join(', ') : '—';
-
-      if (p.front_url) {
-        const box = document.getElementById('imageBox');
-        const img = document.createElement('img');
-        img.src = p.front_url;
-        img.alt = 'Photo produit';
-        img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:12px;';
-        box.replaceChildren(img);
-      }
-
-      loadSimilarProducts(p);
-
-      // Données brutes
-      document.getElementById('rawJsonSection').style.display = 'block';
-      document.getElementById('rawJson').textContent = JSON.stringify(p, null, 2);
-    }
-
-    function toggleRaw() {
-      const pre = document.getElementById('rawJson');
-      pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
-    }
-
-    loadProduct().then(() => lucide.createIcons());
-  </script>
+  <!-- Scripts -->
+  <script src="/static/js/utils.js?v=20260406"></script>
+  <script src="/static/js/api.js?v=20260406"></script>
+  <script src="/static/js/pages/detail.js?v=20260406"></script>
 </body>
 </html>
