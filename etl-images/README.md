@@ -26,14 +26,16 @@ python run.py \
 
 ### filter_data
 
-Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
+Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline. Supporte un filtrage optionnel par pays (`--country`, substring match sur `countries_tags`) et par langue (`--lang`, match exact sur la colonne `lang`).
 
 ```bash
 python run.py \
   --command=filter_data \
   --input_file_key=raw/openfoodfacts.parquet \
   --output_file_key=raw/openfoodfacts_filtered.parquet \
-  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,lang,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments \
+  --country=canada \
+  --lang=fr
 ```
 
 ### validate_data

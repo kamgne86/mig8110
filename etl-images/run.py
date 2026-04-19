@@ -21,7 +21,7 @@ from commands.merge_data import handle as merge_data
 from commands.normalize_categories import handle as normalize_categories
 from commands.normalize_ingredients import handle as normalize_ingredients
 from commands.finalize_products import handle as finalize_products
-from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, filename, base_url, invalid_file_key, country, columns, products_output_key, categories_output_key, product_categories_output_key, ingredients_output_key, product_ingredients_output_key, key_column
+from arguments import command, url, output_file_key, input_file_key, table_name, schema_name, filename, base_url, invalid_file_key, country, lang, columns, products_output_key, categories_output_key, product_categories_output_key, ingredients_output_key, product_ingredients_output_key, key_column
 
 
 @click.command()
@@ -35,6 +35,7 @@ from arguments import command, url, output_file_key, input_file_key, table_name,
 @filename
 @base_url
 @country
+@lang
 @columns
 @products_output_key
 @categories_output_key
@@ -42,11 +43,11 @@ from arguments import command, url, output_file_key, input_file_key, table_name,
 @ingredients_output_key
 @product_ingredients_output_key
 @key_column
-def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, filename, base_url, country, columns, products_output_key, categories_output_key, product_categories_output_key, ingredients_output_key, product_ingredients_output_key, key_column):
+def main(command, output_file_key, url, input_file_key, invalid_file_key, table_name, schema_name, filename, base_url, country, lang, columns, products_output_key, categories_output_key, product_categories_output_key, ingredients_output_key, product_ingredients_output_key, key_column):
     if command == "extract_data":
         extract_data(output_file_key, url)
     elif command == "filter_data":
-        filter_data(input_file_key, output_file_key, columns)
+        filter_data(input_file_key, output_file_key, columns, country, lang)
     elif command == "validate_data":
         validate_data(input_file_key, output_file_key, invalid_file_key, schema_name, table_name)
     elif command == "validate_delta":
