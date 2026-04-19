@@ -3,7 +3,7 @@ import pytest
 import pandas as pd
 from io import BytesIO
 from unittest.mock import Mock, patch
-from commands.filter_delta import handle, _resolve_columns
+from commands.filter_delta import handle, _resolve_columns, _matches_lang
 
 
 def _df_to_parquet_bytes(df):
@@ -22,6 +22,21 @@ SAMPLE_DF = pd.DataFrame({
     "nutriments": ['{"fat_100g": 5.0}', '{"fat_100g": 3.0}'],
     "irrelevant": ["x", "y"],
 })
+
+
+class TestMatchesLang:
+
+    def test_exact_match(self):
+        assert _matches_lang("fr", "fr") is True
+
+    def test_no_match(self):
+        assert _matches_lang("en", "fr") is False
+
+    def test_case_insensitive(self):
+        assert _matches_lang("FR", "fr") is True
+
+    def test_not_a_string(self):
+        assert _matches_lang(None, "fr") is False
 
 
 class TestResolveColumns:
@@ -102,6 +117,21 @@ class TestFilterDelta:
             assert "code" in result_df.columns
             assert "nonexistent_column" in result_df.columns
             assert result_df["nonexistent_column"].isna().all()
+
+    def test_lang_filter(self, mock_env_vars):
+        """Test that rows are filtered by lang."""
+        df = pd.DataFrame({**SAMPLE_DF.to_dict(orient="list"), "lang": ["fr", "en"]})
+
+        with patch("commands.filter_delta.S3FileHandler") as mock_s3_cls:
+            mock_s3 = Mock()
+            mock_s3_cls.return_value = mock_s3
+            mock_s3.download_to_memory.return_value = _df_to_parquet_bytes(df)
+
+            handle("delta/raw.parquet", "delta/filtered.parquet", "code,lang", lang="fr")
+
+            result_df = mock_s3.upload_dataframe.call_args[0][0]
+            assert len(result_df) == 1
+            assert result_df["code"].iloc[0] == "111"
 
     def test_missing_env_var(self):
         """KeyError is raised when S3 environment variables are missing."""
