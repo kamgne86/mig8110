@@ -182,7 +182,7 @@ def _build_categories_table(all_tags, parent_map):
     tags_to_include = set(all_tags)
     for tag in list(all_tags):
         parent = parent_map.get(tag)
-        while parent and parent not in tags_to_include:
+        while parent:
             tags_to_include.add(parent)
             parent = parent_map.get(parent)
 
