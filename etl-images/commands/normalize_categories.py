@@ -80,7 +80,12 @@ def _parse_taxonomy(text):
             continue
 
         if line.startswith("< "):
-            parent_tag = line[2:].strip().lower()
+            raw = line[2:].strip().lower()
+            if ":" in raw:
+                lang, val = raw.split(":", 1)
+                parent_tag = f"{lang.strip()}:{val.strip().replace(' ', '-')}"
+            else:
+                parent_tag = raw.replace(" ", "-")
             current_parents.append(parent_tag)
             continue
 
