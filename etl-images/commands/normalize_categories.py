@@ -264,13 +264,18 @@ def _build_categorie_principale_table(df, tag_to_id):
     toute écriture concurrente sur le parquet transformé pendant que
     normalize_ingredients tourne en parallèle.
     """
-    categorie_principale = df["categories_tags"].apply(
-        lambda tags: tag_to_id[tags[-1]] if tags and tags[-1] in tag_to_id else None
-    )
+    # List comprehension au lieu de apply() — apply() convertit la série en
+    # float64 quand None est présent, causant une perte de précision sur les
+    # grands entiers (ex: 7102743097752187326 → 7102743097752186880).
+    # La list comprehension garde les valeurs comme int Python natif (précision infinie).
+    values = [
+        tag_to_id[tags[-1]] if tags and tags[-1] in tag_to_id else None
+        for tags in df["categories_tags"]
+    ]
 
     out = pd.DataFrame({
         "code":                 df["code"],
-        "categorie_principale": pd.array(categorie_principale, dtype=pd.Int64Dtype()),
+        "categorie_principale": pd.array(values, dtype=pd.Int64Dtype()),
     })
     return out
 
