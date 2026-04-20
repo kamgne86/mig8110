@@ -61,7 +61,7 @@ def _parse_taxonomy(text):
         nonlocal current_canonical, current_parents
         if current_canonical:
             parent_map[current_canonical] = (
-                current_parents[0] if current_parents else None
+                current_parents[-1] if current_parents else None
             )
         current_canonical = None
         current_parents = []
