@@ -164,12 +164,15 @@ def _normalize_tags(tags, canonical_map):
 def _build_categories_table(all_tags, parent_map):
     """Table categories avec IDs stables par hash.
 
-    category_id        : hash MD5 (64 bits, mod 2^63) du category_name
-    category_name      : tag canonique OFF (clé naturelle lisible)
-    parent_category_id : hash MD5 du parent, ou None si racine
+    category_id    : hash MD5 (64 bits, mod 2^63) du category_name
+    category_name  : tag canonique OFF (clé naturelle lisible)
 
-    Les IDs stables garantissent que les FK dans product_categories restent
-    cohérentes entre l'initial load et tous les deltas futurs.
+    Les IDs stables garantissent que les FK dans products.categorie_principale
+    et ancetre_categories restent cohérentes entre l'initial load et tous les
+    deltas futurs.
+
+    La relation parent-enfant n'est plus stockée ici : elle est dérivable
+    depuis ancetre_categories (distance = 1 pour le parent direct).
     """
     tags_to_include = set(all_tags)
     for tag in list(all_tags):
@@ -182,30 +185,117 @@ def _build_categories_table(all_tags, parent_map):
 
     if not tag_to_id:
         return pd.DataFrame({
-            "category_id":        pd.array([], dtype=pd.Int64Dtype()),
-            "category_name":      pd.array([], dtype="string"),
-            "parent_category_id": pd.array([], dtype=pd.Int64Dtype()),
+            "category_id":   pd.array([], dtype=pd.Int64Dtype()),
+            "category_name": pd.array([], dtype="string"),
         }), {}
 
-    tags       = list(tag_to_id.keys())
-    parent_ids = [tag_to_id.get(parent_map.get(tag)) for tag in tags]
+    tags = list(tag_to_id.keys())
     df = pd.DataFrame({
-        "category_id":        pd.array(list(tag_to_id.values()), dtype=pd.Int64Dtype()),
-        "category_name":      tags,
-        "parent_category_id": pd.array(parent_ids, dtype=pd.Int64Dtype()),
+        "category_id":   pd.array(list(tag_to_id.values()), dtype=pd.Int64Dtype()),
+        "category_name": tags,
     })
     return df, tag_to_id
 
 
 # ---------------------------------------------------------------------------
-# 5. Point d'entrée principal
+# 5. Construction de la table ancetre_categories (closure table)
+# ---------------------------------------------------------------------------
+
+def _build_ancetre_categories(tag_to_id, parent_map):
+    """Table de fermeture des ancêtres avec distance.
+
+    category_id        : hash MD5 d'une catégorie descendante
+    category_id_parent : hash MD5 d'un de ses ancêtres (parent, grand-parent, ...)
+    distance           : 1=parent direct, 2=grand-parent, 3=arrière-grand-parent...
+
+    Remplace la table product_categories (Many-to-Many) et permet de retrouver
+    tous les descendants d'une catégorie via une seule requête SQL.
+
+    Exemple pour en:maple-syrups :
+        (en:maple-syrups, en:syrups,     1)
+        (en:maple-syrups, en:sweeteners, 2)
+        (en:maple-syrups, en:food,       3)
+
+    La self-reference (distance=0) n'est pas incluse : seuls les ancêtres
+    stricts (distance ≥ 1) sont stockés, conformément au MCD validé.
+    """
+    rows = []
+    for tag, category_id in tag_to_id.items():
+        parent = parent_map.get(tag)
+        distance = 1
+        while parent:
+            if parent in tag_to_id:
+                rows.append({
+                    "category_id":        category_id,
+                    "category_id_parent": tag_to_id[parent],
+                    "distance":           distance,
+                })
+            parent = parent_map.get(parent)
+            distance += 1
+
+    if not rows:
+        return pd.DataFrame({
+            "category_id":        pd.array([], dtype=pd.Int64Dtype()),
+            "category_id_parent": pd.array([], dtype=pd.Int64Dtype()),
+            "distance":           pd.array([], dtype=pd.Int32Dtype()),
+        })
+
+    df = pd.DataFrame(rows)
+    df["category_id"]        = df["category_id"].astype(pd.Int64Dtype())
+    df["category_id_parent"] = df["category_id_parent"].astype(pd.Int64Dtype())
+    df["distance"]           = df["distance"].astype(pd.Int32Dtype())
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 6. Construction de la jonction code -> categorie_principale
+# ---------------------------------------------------------------------------
+
+def _build_categorie_principale_table(df, tag_to_id):
+    """Table de jonction (code, categorie_principale).
+
+    code                 : clé du produit (FK vers products.code)
+    categorie_principale : hash MD5 du dernier tag de categories_tags
+                           (= catégorie la plus spécifique du produit), ou None
+                           si le produit n'a aucune catégorie.
+
+    Parquet intermédiaire consommé par finalize_products pour merger
+    categorie_principale dans la table products finale. Ce découpage évite
+    toute écriture concurrente sur le parquet transformé pendant que
+    normalize_ingredients tourne en parallèle.
+    """
+    categorie_principale = df["categories_tags"].apply(
+        lambda tags: tag_to_id[tags[-1]] if tags and tags[-1] in tag_to_id else None
+    )
+
+    out = pd.DataFrame({
+        "code":                 df["code"],
+        "categorie_principale": pd.array(categorie_principale, dtype=pd.Int64Dtype()),
+    })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 7. Point d'entrée principal
 # ---------------------------------------------------------------------------
 
 def handle(
     input_file_key,
     categories_output_key,
-    product_categories_output_key,
+    ancetre_categories_output_key,
+    categorie_principale_output_key,
 ):
+    """Normalise categories_tags et produit trois parquets sur S3.
+
+    Remplace la colonne categories_tags monolithique par :
+        categories            : référentiel OFF (category_id, category_name)
+        ancetre_categories    : table de fermeture des ancêtres avec distance
+        categorie_principale  : jonction (code, categorie_principale) mergée
+                                ensuite par finalize_products dans products
+
+    La table products finale est produite par finalize_products après
+    l'exécution parallèle de normalize_categories et normalize_ingredients.
+    """
     s3_bucket     = os.environ["S3_BUCKET"]
     s3_endpoint   = os.environ["S3_ENDPOINT"]
     s3_access_key = os.environ["S3_ACCESS_KEY"]
@@ -224,12 +314,16 @@ def handle(
             f"Colonnes disponibles : {df.columns.tolist()}"
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["category_id", "category_name", "parent_category_id"]),
+            pd.DataFrame(columns=["category_id", "category_name"]),
             categories_output_key,
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["code", "category_id"]),
-            product_categories_output_key,
+            pd.DataFrame(columns=["category_id", "category_id_parent", "distance"]),
+            ancetre_categories_output_key,
+        )
+        s3_handler.upload_dataframe(
+            pd.DataFrame(columns=["code", "categorie_principale"]),
+            categorie_principale_output_key,
         )
         return
 
@@ -256,19 +350,21 @@ def handle(
 
     df_categories, tag_to_id = _build_categories_table(all_tags, parent_map)
 
-    junction_rows = [
-        {"code": row["code"], "category_id": tag_to_id[tag]}
-        for _, row in df[["code", "categories_tags"]].iterrows()
-        for tag in row["categories_tags"]
-        if tag in tag_to_id
-    ]
-    df_product_categories = pd.DataFrame(
-        junction_rows if junction_rows else [],
-        columns=["code", "category_id"],
-    )
+    df_ancetre_categories = _build_ancetre_categories(tag_to_id, parent_map)
+
+    df_categorie_principale = _build_categorie_principale_table(df, tag_to_id)
 
     s3_handler.upload_dataframe(df_categories, categories_output_key)
     logger.info(f"categories uploaded → {categories_output_key} ({len(df_categories)} records)")
 
-    s3_handler.upload_dataframe(df_product_categories, product_categories_output_key)
-    logger.info(f"product_categories uploaded → {product_categories_output_key} ({len(df_product_categories)} records)")
+    s3_handler.upload_dataframe(df_ancetre_categories, ancetre_categories_output_key)
+    logger.info(
+        f"ancetre_categories uploaded → {ancetre_categories_output_key} "
+        f"({len(df_ancetre_categories)} records)"
+    )
+
+    s3_handler.upload_dataframe(df_categorie_principale, categorie_principale_output_key)
+    logger.info(
+        f"categorie_principale uploaded → {categorie_principale_output_key} "
+        f"({len(df_categorie_principale)} records)"
+    )
