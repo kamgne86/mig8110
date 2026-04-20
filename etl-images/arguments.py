@@ -99,6 +99,27 @@ product_categories_output_key = click.option(
     help='Output file key in S3 for the product_categories junction parquet'
 )
 
+ancetre_categories_output_key = click.option(
+    '--ancetre_categories_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the ancetre_categories closure parquet'
+)
+
+categorie_principale_output_key = click.option(
+    '--categorie_principale_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the categorie_principale parquet'
+)
+
+categorie_principale_input_key = click.option(
+    '--categorie_principale_input_key',
+    type=str,
+    default=None,
+    help='Input file key in S3 for the categorie_principale parquet (used by finalize_products)'
+)
+
 ingredients_output_key = click.option(
     '--ingredients_output_key',
     type=str,
