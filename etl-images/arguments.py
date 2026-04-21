@@ -140,3 +140,10 @@ key_column = click.option(
     default='code',
     help='Column used as key for the DELETE + INSERT upsert in load_delta (default: code)'
 )
+
+key_column2 = click.option(
+    '--key_column2',
+    type=str,
+    default=None,
+    help='Optional second column for composite key DELETE in load_delta (ex: category_id_parent pour ancetre_categories)'
+)
