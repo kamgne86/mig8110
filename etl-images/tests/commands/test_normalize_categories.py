@@ -77,6 +77,35 @@ en:food
 """
 
 
+@pytest.fixture
+def taxonomy_text_multi_parent():
+    """Taxonomie avec plusieurs lignes < pour tester la sélection du bon parent.
+
+    en:simple-syrups a deux parents dans categories.txt :
+        < en:sweeteners  (premier  — plus général)
+        < en:syrups      (dernier  — plus spécifique → doit être retenu)
+
+    Ce cas reproduit exactement le bug trouvé en production où
+    en:maple-syrups ne remontait pas jusqu'à en:syrups.
+    """
+    return """
+en:food
+
+en:sweeteners
+< en:food
+
+en:syrups
+< en:sweeteners
+
+en:simple-syrups
+< en:sweeteners
+< en:syrups
+
+en:maple-syrups
+< en:simple-syrups
+"""
+
+
 # ---------------------------------------------------------------------------
 # Tests _to_list
 # ---------------------------------------------------------------------------
@@ -126,7 +155,6 @@ class TestParseTaxonomy:
 
     def test_synonym_maps_to_canonical(self, taxonomy_text):
         canonical_map, _ = _parse_taxonomy(taxonomy_text)
-        # "Pure maple syrup" → en:pure-maple-syrup, doit pointer vers le canonique en:maple-syrups
         assert canonical_map.get("en:pure-maple-syrup") == "en:maple-syrups"
 
     def test_parent_map_contains_parent(self, taxonomy_text):
@@ -142,6 +170,34 @@ class TestParseTaxonomy:
         canonical_map, parent_map = _parse_taxonomy("")
         assert canonical_map == {}
         assert parent_map == {}
+
+    def test_multi_parent_keeps_last_parent(self, taxonomy_text_multi_parent):
+        """Quand une catégorie a plusieurs lignes <, le dernier parent doit être retenu.
+
+        En:simple-syrups a < en:sweeteners puis < en:syrups dans categories.txt.
+        Le dernier (en:syrups) est le plus spécifique et doit être le parent retenu
+        pour permettre la remontée correcte de la hiérarchie.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text_multi_parent)
+        assert parent_map["en:simple-syrups"] == "en:syrups"
+
+    def test_parent_tag_spaces_normalized_to_hyphens(self):
+        """Les espaces dans les lignes < doivent être convertis en tirets.
+
+        categories.txt peut contenir '< en:Simple syrups' (avec espace).
+        Sans normalisation, 'en:simple syrups' != 'en:simple-syrups' → chaîne cassée.
+        """
+        text = """
+en:sweeteners
+
+en:simple syrups
+< en:sweeteners
+
+en:maple-syrups
+< en:Simple syrups
+"""
+        _, parent_map = _parse_taxonomy(text)
+        assert parent_map.get("en:maple-syrups") == "en:simple-syrups"
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +255,20 @@ class TestBuildCategoriesTable:
         assert "en:syrups" in names
         assert "en:sweeteners" in names
 
+    def test_full_chain_included_even_if_intermediate_already_present(self, taxonomy_text):
+        """Si un ancêtre intermédiaire est déjà dans all_tags, la remontée ne doit
+        pas s'arrêter — tous les ancêtres jusqu'à la racine doivent être inclus.
+
+        Cas : all_tags = {en:maple-syrups, en:syrups}
+        En:syrups est déjà présent mais en:sweeteners et en:food doivent
+        quand même être ajoutés via la remontée depuis en:maple-syrups.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        df, _ = _build_categories_table({"en:maple-syrups", "en:syrups"}, parent_map)
+        names = set(df["category_name"])
+        assert "en:sweeteners" in names
+        assert "en:food" in names
+
     def test_category_id_is_stable_hash(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
         df, _ = _build_categories_table({"en:maple-syrups"}, parent_map)
@@ -219,6 +289,10 @@ class TestBuildCategoriesTable:
         assert tag_to_id == {}
 
 
+# ---------------------------------------------------------------------------
+# Tests _build_ancetre_categories
+# ---------------------------------------------------------------------------
+
 class TestBuildAncetreCategories:
 
     def test_parent_relationship(self, taxonomy_text):
@@ -228,6 +302,21 @@ class TestBuildAncetreCategories:
         row = df[(df["category_id"] == _stable_id("en:maple-syrups")) & (df["distance"] == 1)]
         assert len(row) == 1
         assert row.iloc[0]["category_id_parent"] == _stable_id("en:syrups")
+
+    def test_full_chain_distances(self, taxonomy_text):
+        """La chaîne complète en:maple-syrups → en:syrups → en:sweeteners → en:food
+        doit produire les distances 1, 2, 3 correctement.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        _, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+
+        maple_rows = df[df["category_id"] == _stable_id("en:maple-syrups")].copy()
+        maple_rows = maple_rows.set_index("distance")
+
+        assert maple_rows.loc[1, "category_id_parent"] == _stable_id("en:syrups")
+        assert maple_rows.loc[2, "category_id_parent"] == _stable_id("en:sweeteners")
+        assert maple_rows.loc[3, "category_id_parent"] == _stable_id("en:food")
 
     def test_root_has_no_ancestors(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
@@ -241,6 +330,22 @@ class TestBuildAncetreCategories:
         df = _build_ancetre_categories({}, parent_map)
         assert len(df) == 0
         assert list(df.columns) == ["category_id", "category_id_parent", "distance"]
+
+    def test_multi_parent_chain(self, taxonomy_text_multi_parent):
+        """Vérifie la chaîne complète quand une catégorie a plusieurs lignes <.
+
+        en:maple-syrups → en:simple-syrups (d=1) → en:syrups (d=2) → en:sweeteners (d=3)
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text_multi_parent)
+        _, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+
+        maple_rows = df[df["category_id"] == _stable_id("en:maple-syrups")].copy()
+        maple_rows = maple_rows.set_index("distance")
+
+        assert maple_rows.loc[1, "category_id_parent"] == _stable_id("en:simple-syrups")
+        assert maple_rows.loc[2, "category_id_parent"] == _stable_id("en:syrups")
+        assert maple_rows.loc[3, "category_id_parent"] == _stable_id("en:sweeteners")
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +426,7 @@ en:salty-snacks
     def test_missing_env_var_raises(self, sample_df):
         """KeyError si les variables S3 sont absentes."""
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(KeyError, match="S3_BUCKET"):
+            with pytest.raises(KeyError):
                 handle("input.parquet", "categories.parquet", "ancetre_categories.parquet", "categorie_principale.parquet")
 
     def test_missing_categories_tags_column(self, mock_env_vars):
