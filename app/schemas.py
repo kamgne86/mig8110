@@ -59,3 +59,23 @@ class ProductDetail(BaseModel):
     sodium_100g: Optional[float] = None
 
     model_config = {"from_attributes": True, "extra": "allow"}
+
+
+class SimilarProductItem(BaseModel):
+    code: str
+    product_name: Optional[str] = None
+    brands: Optional[str] = None
+    front_url: Optional[str] = None
+    categories: list[CategorySchema] = []
+    ingredients: list[str] = []
+    normalized_ingredients: list[str] = []
+    alias_sources: dict[str, int] = {}
+    similarity_score: float
+    ingredient_similarity_pct: int
+    nutriment_similarity_pct: int
+    category_similarity_pct: int
+    overall_similarity_pct: int
+    category_label: Optional[str] = None
+    top_ingredients: list[str] = []
+
+    model_config = {"from_attributes": True}

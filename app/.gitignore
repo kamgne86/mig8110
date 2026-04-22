@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+alias_normalization_cache.json
 .venv
 env/
 venv/
