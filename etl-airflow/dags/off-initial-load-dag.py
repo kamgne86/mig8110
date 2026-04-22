@@ -12,13 +12,15 @@ Pipeline :
     validate_data          : Sépare les enregistrements valides des invalides selon les règles définies
     transform_data         : Transforme les données : product_name, URLs d'images, nutriments à plat
     normalize_categories   : (parallèle) Normalise categories_tags → categories + ancetre_categories + categorie_principale
-    normalize_ingredients  : (parallèle) Normalise ingredients_tags → ingredients + product_ingredients
-    finalize_products      : Merge categorie_principale + supprime categories_tags/ingredients_tags → table products finale
+    normalize_ingredients  : (parallèle) Normalise ingredients → ingredients + product_ingredients + sous_ingredients + ingredient_alias
+    finalize_products      : Merge categorie_principale + supprime categories_tags/ingredients → table products finale
     load_products          : Charge silver.products dans MotherDuck
     load_categories        : Charge silver.categories dans MotherDuck
     load_ancetre_categories: Charge silver.ancetre_categories dans MotherDuck
     load_ingredients       : Charge silver.ingredients dans MotherDuck
     load_product_ingredients: Charge silver.product_ingredients dans MotherDuck
+    load_sous_ingredients  : Charge silver.sous_ingredients dans MotherDuck
+    load_ingredient_alias  : Charge silver.ingredient_alias dans MotherDuck
 
 Outputs S3 (bucket: bi-dev) :
     Fichier S3                                        Couche    Destination MotherDuck
@@ -34,6 +36,8 @@ Outputs S3 (bucket: bi-dev) :
     silver/ancetre_categories.parquet                 Silver    —  (silver.ancetre_categories)
     silver/ingredients.parquet                        Silver    —  (silver.ingredients)
     silver/product_ingredients.parquet                Silver    —  (silver.product_ingredients)
+    silver/sous_ingredients.parquet                   Silver    —  (silver.sous_ingredients)
+    silver/ingredient_alias.parquet                   Silver    —  (silver.ingredient_alias)
 
 Outputs MotherDuck (base: off) :
     bronze.products               : Données brutes filtrées
@@ -41,7 +45,9 @@ Outputs MotherDuck (base: off) :
     silver.categories             : Référentiel OFF des catégories
     silver.ancetre_categories     : Table de fermeture des ancêtres (category_id, category_id_parent, distance)
     silver.ingredients            : Référentiel OFF ingrédients
-    silver.product_ingredients    : Jonction Many-to-Many (code, ingredient_id)
+    silver.product_ingredients    : Jonction produit ↔ ingrédient niveau 1 (code, ingredient_id, ingredient_order, role)
+    silver.sous_ingredients       : Composition des ingrédients composés niveau 2+ (ingredient_id, sous_ingredient_id, rang)
+    silver.ingredient_alias       : Variantes textuelles d'un ingrédient (ingredient_id, alias_name)
     monitoring.pipeline_runs      : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
 import pendulum
@@ -117,6 +123,8 @@ CATEGORIES_TABLE              = "categories"
 ANCETRE_CATEGORIES_TABLE      = "ancetre_categories"
 INGREDIENTS_TABLE             = "ingredients"
 PRODUCT_INGREDIENTS_TABLE     = "product_ingredients"
+SOUS_INGREDIENTS_TABLE        = "sous_ingredients"
+INGREDIENT_ALIAS_TABLE        = "ingredient_alias"
 
 # Clés S3 préfixées par dag_id pour isoler les fichiers dans le bucket
 RAW_FILE_KEY                       = f"{DAG_ID}/bronze/data.parquet"
@@ -130,13 +138,15 @@ CATEGORIES_FILE_KEY                = f"{DAG_ID}/silver/categories.parquet"
 ANCETRE_CATEGORIES_FILE_KEY        = f"{DAG_ID}/silver/ancetre_categories.parquet"
 INGREDIENTS_FILE_KEY               = f"{DAG_ID}/silver/ingredients.parquet"
 PRODUCT_INGREDIENTS_FILE_KEY       = f"{DAG_ID}/silver/product_ingredients.parquet"
+SOUS_INGREDIENTS_FILE_KEY          = f"{DAG_ID}/silver/sous_ingredients.parquet"
+INGREDIENT_ALIAS_FILE_KEY          = f"{DAG_ID}/silver/ingredient_alias.parquet"
 
 # Colonnes à conserver lors du filtrage
 FILTER_COLUMNS = ",".join([
     "code", "brands", "product_name", "product_quantity", "product_quantity_unit",
     "quantity", "serving_quantity", "serving_size", "categories_tags", "countries_tags",
-    "ecoscore_score", "ecoscore_grade", "images", "ingredients_tags", "ingredients_n",
-    "ingredients", "nutriscore_score", "nutriscore_grade", "nutriments", "lang",
+    "ecoscore_score", "ecoscore_grade", "images", "ingredients", "ingredients_n",
+    "nutriscore_score", "nutriscore_grade", "nutriments", "lang",
 ])
 
 with dag:
@@ -252,7 +262,8 @@ with dag:
         ]
     )
 
-    # (parallèle) Normalise ingredients_tags → ingredients + product_ingredients.
+    # (parallèle) Normalise ingredients → ingredients + product_ingredients
+    # + sous_ingredients + ingredient_alias.
     normalize_ingredients = CustomKubernetesPodOperator(
         dag=dag,
         name='normalize-ingredients',
@@ -260,10 +271,12 @@ with dag:
         env_vars={**s3_env_vars},
         container_resources=RESOURCES_MEDIUM,
         arguments=[
-            "--command",                        "normalize_ingredients",
-            "--input_file_key",                 TRANSFORMED_FILE_KEY,
-            "--ingredients_output_key",         INGREDIENTS_FILE_KEY,
-            "--product_ingredients_output_key", PRODUCT_INGREDIENTS_FILE_KEY,
+            "--command",                          "normalize_ingredients",
+            "--input_file_key",                   TRANSFORMED_FILE_KEY,
+            "--ingredients_output_key",           INGREDIENTS_FILE_KEY,
+            "--product_ingredients_output_key",   PRODUCT_INGREDIENTS_FILE_KEY,
+            "--sous_ingredients_output_key",      SOUS_INGREDIENTS_FILE_KEY,
+            "--ingredient_alias_output_key",      INGREDIENT_ALIAS_FILE_KEY,
         ]
     )
 
@@ -348,7 +361,7 @@ with dag:
         ]
     )
 
-    # Charge silver.product_ingredients dans MotherDuck (jonction Many-to-Many).
+    # Charge silver.product_ingredients dans MotherDuck (jonction produit ↔ ingrédient niveau 1).
     load_product_ingredients = CustomKubernetesPodOperator(
         dag=dag,
         name='load-product-ingredients',
@@ -359,6 +372,36 @@ with dag:
             "--command",        "load_data",
             "--input_file_key", PRODUCT_INGREDIENTS_FILE_KEY,
             "--table_name",     PRODUCT_INGREDIENTS_TABLE,
+            "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+        ]
+    )
+
+    # Charge silver.sous_ingredients dans MotherDuck (composition des ingrédients composés niveau 2+).
+    load_sous_ingredients = CustomKubernetesPodOperator(
+        dag=dag,
+        name='load-sous-ingredients',
+        image=IMAGE,
+        env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
+        arguments=[
+            "--command",        "load_data",
+            "--input_file_key", SOUS_INGREDIENTS_FILE_KEY,
+            "--table_name",     SOUS_INGREDIENTS_TABLE,
+            "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
+        ]
+    )
+
+    # Charge silver.ingredient_alias dans MotherDuck (variantes textuelles des ingrédients).
+    load_ingredient_alias = CustomKubernetesPodOperator(
+        dag=dag,
+        name='load-ingredient-alias',
+        image=IMAGE,
+        env_vars={**s3_env_vars, **duckdb_env_vars},
+        container_resources=RESOURCES_LIGHT,
+        arguments=[
+            "--command",        "load_data",
+            "--input_file_key", INGREDIENT_ALIAS_FILE_KEY,
+            "--table_name",     INGREDIENT_ALIAS_TABLE,
             "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
         ]
     )
@@ -381,8 +424,12 @@ with dag:
     # categories doit être chargé avant ancetre_categories et products (FK)
     finalize_products >> load_categories
     load_categories >> [load_ancetre_categories, load_products]
-    finalize_products >> [load_ingredients, load_product_ingredients]
+    # ingredients doit être chargé avant product_ingredients, sous_ingredients
+    # et ingredient_alias (FK vers ingredients.ingredient_id)
+    finalize_products >> load_ingredients
+    load_ingredients >> [load_product_ingredients, load_sous_ingredients, load_ingredient_alias]
 
     [load_products, load_categories, load_ancetre_categories,
-     load_ingredients, load_product_ingredients] >> end
+     load_ingredients, load_product_ingredients,
+     load_sous_ingredients, load_ingredient_alias] >> end
     
