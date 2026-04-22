@@ -25,24 +25,37 @@ function initializeFromURL() {
   const params = new URLSearchParams(window.location.search);
   const ingredient = params.get('ingredient');
   const category = params.get('category');
+  const searchType = document.getElementById('searchType');
 
   if (ingredient) {
     state.tagsearch = ingredient;
     state.tagsearchType = 'ingredient';
+    state.searchMode = 'ingredient';
     document.getElementById('searchName').value = ingredient;
+    if (searchType) searchType.value = 'ingredient';
     return true;
   } else if (category) {
     state.tagsearch = category;
     state.tagsearchType = 'category';
+    state.searchMode = 'category';
     document.getElementById('searchName').value = category;
+    if (searchType) searchType.value = 'category';
     return true;
   }
+
+  state.searchMode = 'product';
+  if (searchType) searchType.value = 'product';
   return false;
 }
 
 async function fetchAndRender() {
   const name  = document.getElementById('searchName').value.trim();
   const brand = document.getElementById('searchBrand').value.trim();
+  const searchType = document.getElementById('searchType');
+  const searchMode = searchType ? searchType.value : 'product';
+
+  state.searchMode = searchMode;
+  state.tagsearchType = searchMode === 'product' ? null : searchMode;
 
   showLoading();
   hideError();
@@ -50,9 +63,9 @@ async function fetchAndRender() {
   try {
     const params = new URLSearchParams();
     if (name) {
-      if (state.tagsearchType === 'ingredient') {
+      if (searchMode === 'ingredient') {
         params.append('ingredient', name);
-      } else if (state.tagsearchType === 'category') {
+      } else if (searchMode === 'category') {
         params.append('category', name);
       } else {
         params.append('q', name);
@@ -71,9 +84,17 @@ async function fetchAndRender() {
 
 document.addEventListener('DOMContentLoaded', () => {
   const hasUrlParams = initializeFromURL();
+  const searchType = document.getElementById('searchType');
 
   // Filtres Nutri-Score
   initNutriScoreFilters();
+
+  if (searchType) {
+    searchType.addEventListener('change', () => {
+      state.searchMode = searchType.value;
+      state.tagsearchType = searchType.value === 'product' ? null : searchType.value;
+    });
+  }
 
   // Recherche au Enter
   document.addEventListener('keypress', e => {
