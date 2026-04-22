@@ -1,6 +1,9 @@
 // ─── Couche API centralisée ──────────────────────────────────────────────────
 
-const API_BASE = '';
+const API_BASE =
+  window.location.hostname === 'localhost'
+    ? `http://127.0.0.1:${window.location.port || '8001'}`
+    : '';
 
 async function fetchProducts(searchParams) {
   const res = await fetch(`${API_BASE}/products?${searchParams}`);
