@@ -108,7 +108,7 @@ def handle(input_file_key, output_file_key):
     # On les parse ici avant les transformations pour restaurer les types attendus :
     # - images, nutriments : dicts nécessaires pour l'extraction
     # - categories_tags, countries_tags, ingredients_tags : listes → VARCHAR[] dans MotherDuck
-    for col in ['images', 'nutrition', 'categories_tags', 'countries_tags', 'ingredients_tags']:
+    for col in ['images', 'nutrition', 'categories_tags', 'countries_tags', 'ingredients']:
         if col in df.columns:
             df[col] = df[col].apply(_parse_json)
 

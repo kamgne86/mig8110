@@ -92,13 +92,6 @@ categories_output_key = click.option(
     help='Output file key in S3 for the categories parquet'
 )
 
-product_categories_output_key = click.option(
-    '--product_categories_output_key',
-    type=str,
-    default=None,
-    help='Output file key in S3 for the product_categories junction parquet'
-)
-
 ancetre_categories_output_key = click.option(
     '--ancetre_categories_output_key',
     type=str,
@@ -132,6 +125,20 @@ product_ingredients_output_key = click.option(
     type=str,
     default=None,
     help='Output file key in S3 for the product_ingredients junction parquet'
+)
+
+sous_ingredients_output_key = click.option(
+    '--sous_ingredients_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the sous_ingredients parquet'
+)
+
+ingredient_alias_output_key = click.option(
+    '--ingredient_alias_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the ingredient_alias parquet'
 )
 
 key_column = click.option(

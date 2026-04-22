@@ -5,7 +5,7 @@ from common.s3 import S3FileHandler
 
 logger = logging.getLogger(__name__)
 
-COLUMNS_TO_DROP = ["categories_tags", "ingredients_tags"]
+COLUMNS_TO_DROP = ["categories_tags", "ingredients"]
 
 
 def handle(input_file_key, categorie_principale_input_key, output_file_key):
