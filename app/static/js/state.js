@@ -3,6 +3,7 @@
 const state = {
   allProducts: [],
   activeGrades: new Set(),
+  searchMode: 'product',
   tagsearch: null,
   tagsearchType: null,
   radarChartInstance: null,

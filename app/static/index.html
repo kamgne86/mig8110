@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FoodHealth Advisor</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260406" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260422_2" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -17,6 +17,11 @@
 
       <div class="panel-body">
         <div class="search-row">
+          <select id="searchType" aria-label="Type de recherche">
+            <option value="product">Produit</option>
+            <option value="ingredient">Ingrédient</option>
+            <option value="category">Catégorie</option>
+          </select>
           <input type="text" id="searchName" placeholder="Rechercher par nom produit ..." />
           <input type="text" id="searchBrand" placeholder="Marque..." />
           <button onclick="fetchAndRender()">Rechercher</button>
@@ -122,15 +127,15 @@
   </div>
 
   <!-- Scripts : ordre de chargement important -->
-  <script src="/static/js/utils.js?v=20260406"></script>
-  <script src="/static/js/state.js?v=20260406"></script>
-  <script src="/static/js/api.js?v=20260406"></script>
-  <script src="/static/js/components/productCard.js?v=20260406"></script>
-  <script src="/static/js/components/filters.js?v=20260406"></script>
-  <script src="/static/js/components/insights.js?v=20260406"></script>
-  <script src="/static/js/components/comparison.js?v=20260406"></script>
-  <script src="/static/js/components/metricsSelector.js?v=20260406"></script>
-  <script src="/static/js/app.js?v=20260406"></script>
+  <script src="/static/js/utils.js?v=20260422_2"></script>
+  <script src="/static/js/state.js?v=20260422_2"></script>
+  <script src="/static/js/api.js?v=20260422_2"></script>
+  <script src="/static/js/components/productCard.js?v=20260422_2"></script>
+  <script src="/static/js/components/filters.js?v=20260422_2"></script>
+  <script src="/static/js/components/insights.js?v=20260422_2"></script>
+  <script src="/static/js/components/comparison.js?v=20260422_2"></script>
+  <script src="/static/js/components/metricsSelector.js?v=20260422_2"></script>
+  <script src="/static/js/app.js?v=20260422_2"></script>
   <script>lucide.createIcons();</script>
 </body>
 </html>

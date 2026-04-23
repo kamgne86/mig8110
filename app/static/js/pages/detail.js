@@ -214,6 +214,14 @@ function renderSimilarCard(product, meta) {
             <span class="similar-field-label">Nutriments similaires</span>
             <span class="similar-field-value similar-score">${meta.nutrimentSimilarityPct}%</span>
           </div>
+          <div class="similar-field">
+            <span class="similar-field-label">Categorie similaire</span>
+            <span class="similar-field-value similar-score">${meta.categorySimilarityPct}%</span>
+          </div>
+          <div class="similar-field">
+            <span class="similar-field-label">Score global</span>
+            <span class="similar-field-value similar-score">${meta.overallSimilarityPct}%</span>
+          </div>
         </div>
       </div>
       <a class="detail-btn" href="/static/detail.html?code=${escAttr(product.code)}">Voir detail</a>
@@ -225,49 +233,8 @@ async function loadSimilarProducts(baseProduct) {
   const container = document.getElementById('similarProducts');
   if (!container) return;
 
-  const category = getTargetCategory(baseProduct);
-  if (!category) {
-    container.innerHTML = '<p class="empty-msg">Categorie manquante: impossible de calculer des produits similaires fiables.</p>';
-    return;
-  }
-
-  const params = new URLSearchParams();
-  params.set('category', category);
-  params.set('limit', '16');
-
   try {
-    const rows = await fetchProducts(params);
-    const currentCode = String(baseProduct.code || '');
-
-    const seed = rows
-      .filter(item => item && item.code && String(item.code) !== currentCode)
-      .slice(0, 12);
-
-    const detailedCandidates = await Promise.all(
-      seed.map(async item => {
-        try {
-          return await fetchProduct(item.code);
-        } catch (err) {
-          console.warn('Impossible de charger le detail pour', item.code, err);
-          return null;
-        }
-      })
-    );
-
-    const ranked = detailedCandidates
-      .filter(Boolean)
-      .map(candidate => {
-        const meta = getSimilarityMeta(baseProduct, candidate);
-        return { candidate, meta };
-      })
-      .filter(entry => entry.meta.sameCategory)
-      .sort((a, b) => {
-        if (b.meta.totalScore !== a.meta.totalScore) {
-          return b.meta.totalScore - a.meta.totalScore;
-        }
-        return String(a.candidate.product_name || '').localeCompare(String(b.candidate.product_name || ''));
-      })
-      .slice(0, 4);
+    const ranked = await fetchSimilarProducts(baseProduct.code, 4);
 
     if (!ranked.length) {
       container.innerHTML = '<p class="empty-msg">Aucun produit similaire trouve.</p>';
@@ -275,7 +242,14 @@ async function loadSimilarProducts(baseProduct) {
     }
 
     container.innerHTML = ranked
-      .map(entry => renderSimilarCard(entry.candidate, entry.meta))
+      .map(product => renderSimilarCard(product, {
+        categoryLabel: product.category_label || getTargetCategory(product) || '—',
+        topIngredients: Array.isArray(product.top_ingredients) ? product.top_ingredients : [],
+        ingredientSimilarityPct: Number(product.ingredient_similarity_pct || 0),
+        nutrimentSimilarityPct: Number(product.nutriment_similarity_pct || 0),
+        categorySimilarityPct: Number(product.category_similarity_pct || 0),
+        overallSimilarityPct: Number(product.overall_similarity_pct || 0)
+      }))
       .join('');
   } catch (error) {
     container.innerHTML = '<p class="empty-msg">Erreur lors du chargement des produits similaires.</p>';

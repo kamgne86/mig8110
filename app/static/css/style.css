@@ -106,13 +106,15 @@ body {
   flex-wrap: wrap;
 }
 
-.search-row input {
+.search-row input,
+.search-row select {
   flex: 1;
   min-width: 160px;
   padding: 12px 14px;
   border: 1px solid #d0d5dd;
   border-radius: 6px;
   font-size: 15px;
+  background: white;
 }
 
 .search-row button {
