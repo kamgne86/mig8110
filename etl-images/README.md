@@ -26,14 +26,16 @@ python run.py \
 
 ### filter_data
 
-Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline.
+Sélectionne uniquement les colonnes pertinentes depuis un parquet brut et uploade le résultat sur S3. Permet de réduire l'empreinte mémoire des étapes suivantes du pipeline. Supporte un filtrage optionnel par pays (`--country`, substring match sur `countries_tags`) et par langue (`--lang`, match exact sur la colonne `lang`).
 
 ```bash
 python run.py \
   --command=filter_data \
   --input_file_key=raw/openfoodfacts.parquet \
   --output_file_key=raw/openfoodfacts_filtered.parquet \
-  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,lang,ecoscore_score,ecoscore_grade,images,ingredients_tags,ingredients,nutriscore_score,nutriscore_grade,nutriments \
+  --country=canada \
+  --lang=fr
 ```
 
 ### validate_data
@@ -108,7 +110,7 @@ python run.py \
 
 ### filter_delta
 
-Sélectionne uniquement les colonnes pertinentes depuis le parquet delta. Supporte la syntaxe pipe (`target|fallback`) pour gérer les colonnes renommées entre versions de fichiers delta. Les colonnes absentes sont incluses avec des valeurs `None` pour garantir un schéma uniforme.
+Sélectionne uniquement les colonnes pertinentes depuis le parquet delta. Supporte la syntaxe pipe (`target|fallback`) pour gérer les colonnes renommées entre versions de fichiers delta. Les colonnes absentes sont incluses avec des valeurs `None` pour garantir un schéma uniforme. Supporte un filtrage optionnel par langue (`--lang`, match exact sur la colonne `lang`).
 
 > **Note :** La colonne `nutrition` est extraite à la place de `nutriments` (qui existe dans les deltas mais est majoritairement vide). Le renommage vers `nutriments` est effectué dans `transform_delta`.
 
@@ -117,7 +119,8 @@ python run.py \
   --command=filter_delta \
   --input_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745.parquet \
   --output_file_key=off_weekly_delta_load/delta/openfoodfacts_products_1770673073_1772050745_filtered.parquet \
-  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,ecoscore_score|environmental_score_score,ecoscore_grade|environmental_score_grade,images,ingredients_tags,nutriscore_score,nutriscore_grade,nutrition
+  --columns=code,brands,product_name,product_quantity,product_quantity_unit,quantity,serving_quantity,serving_size,categories_tags,countries_tags,lang,ecoscore_score|environmental_score_score,ecoscore_grade|environmental_score_grade,images,ingredients_tags,nutriscore_score,nutriscore_grade,nutrition \
+  --lang=fr
 ```
 
 ### validate_delta

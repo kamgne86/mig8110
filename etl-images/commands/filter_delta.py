@@ -31,7 +31,12 @@ def _resolve_columns(df, columns):
     return resolved
 
 
-def handle(input_file_key, output_file_key, columns):
+def _matches_lang(lang_value, lang):
+    """Check if the lang column matches the given language code."""
+    return isinstance(lang_value, str) and lang_value.lower() == lang.lower()
+
+
+def handle(input_file_key, output_file_key, columns, lang=None):
     """Read a delta parquet from S3, select requested columns with fallback support,
     and upload the result as parquet.
 
@@ -66,6 +71,10 @@ def handle(input_file_key, output_file_key, columns):
         else:
             logger.warning(f"Column '{target}' not found in {input_file_key}, filling with None.")
             result[target] = None
+
+    if lang is not None:
+        result = result[result["lang"].apply(lambda l: _matches_lang(l, lang))]
+        logger.info(f"Lang filter '{lang}': {len(result)} records remaining.")
 
     s3_handler.upload_dataframe(result, output_file_key)
 

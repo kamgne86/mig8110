@@ -1,5 +1,6 @@
 import ast
 import os
+import hashlib
 import logging
 import requests
 import pandas as pd
@@ -12,6 +13,20 @@ INGREDIENTS_TXT_URL = (
     "https://raw.githubusercontent.com/openfoodfacts/"
     "openfoodfacts-server/main/taxonomies/food/ingredients.txt"
 )
+
+
+# ---------------------------------------------------------------------------
+# Utilitaire — ID stable par hash
+# ---------------------------------------------------------------------------
+
+def _stable_id(name: str) -> int:
+    """Génère un ID entier positif stable depuis un nom canonique OFF.
+
+    16 hex chars = 64 bits → collision quasi-impossible même pour 80 000 ingrédients.
+    Modulo 2^63 pour rester dans les limites du BIGINT signé de DuckDB.
+    Même nom = même ID garanti entre initial load et tous les deltas futurs.
+    """
+    return int(hashlib.md5(name.encode()).hexdigest()[:16], 16) % (2 ** 63)
 
 
 # ---------------------------------------------------------------------------
@@ -46,10 +61,6 @@ def _parse_taxonomy(text: str) -> dict:
 
     canonical_map : {tag_quelconque -> tag_canonique}
         Exemple : 'fr:huile-de-soja' -> 'en:soybean-oil'
-
-    Seuls les lignes avec un code de langue ISO (2-3 lettres) sont traitées.
-    Les propriétés (vegan:, nova:, allergens:, description:, wikidata:, ...)
-    sont ignorées automatiquement via _is_language_code() — pas de liste hardcodée.
     """
     canonical_map: dict[str, str] = {}
     current_canonical: str | None = None
@@ -77,8 +88,6 @@ def _parse_taxonomy(text: str) -> dict:
         lang, rest = line.split(":", 1)
         lang = lang.strip()
 
-        # Ignorer les propriétés OFF (vegan, nova, allergens, description, wikidata...)
-        # sans les lister : un code de langue est toujours 2-3 lettres alphabétiques.
         if not _is_language_code(lang):
             continue
 
@@ -150,21 +159,29 @@ def _normalize_tags(tags, canonical_map: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 4. Construction de la table ingredients
+# 4. Construction de la table ingredients (avec IDs stables)
 # ---------------------------------------------------------------------------
 
-def _build_ingredients_table(all_tags: set[str]) -> pd.DataFrame:
-    """Construit la table ingredients avec ingredient_name comme PK naturelle.
+def _build_ingredients_table(all_tags: set[str]) -> tuple[pd.DataFrame, dict]:
+    """Table ingredients avec IDs stables par hash.
 
-    Une seule colonne pour l'instant. Les propriétés (vegan, nova_marker,
-    allergen) seront ajoutées dans une version future quand le schéma
-    incremental sera stabilisé.
+    ingredient_id   : hash MD5 (64 bits, mod 2^63) du ingredient_name
+    ingredient_name : tag canonique OFF (clé naturelle lisible)
+
+    Les IDs stables garantissent que les FK dans product_ingredients restent
+    cohérentes entre l'initial load et tous les deltas futurs.
     """
     if not all_tags:
-        return pd.DataFrame(columns=["ingredient_name"])
-    return pd.DataFrame(
-        [{"ingredient_name": tag} for tag in sorted(all_tags)]
-    )
+        return pd.DataFrame(columns=["ingredient_id", "ingredient_name"]), {}
+
+    tag_to_id = {tag: _stable_id(tag) for tag in all_tags}
+
+    rows = [
+        {"ingredient_id": iid, "ingredient_name": tag}
+        for tag, iid in tag_to_id.items()
+    ]
+
+    return pd.DataFrame(sorted(rows, key=lambda r: r["ingredient_name"])), tag_to_id
 
 
 # ---------------------------------------------------------------------------
@@ -179,16 +196,11 @@ def handle(
     """Normalise ingredients_tags et produit deux parquets distincts sur S3.
 
     Remplace la colonne ingredients_tags monolithique par :
-        ingredients          : référentiel OFF (ingredient_name)
-        product_ingredients  : table de jonction Many-to-Many (code, ingredient_name)
+        ingredients          : référentiel OFF (ingredient_id, ingredient_name)
+        product_ingredients  : table de jonction Many-to-Many (code, ingredient_id)
 
-    La table products (sans ingredients_tags) est produite par finalize_products
-    après l'exécution parallèle de normalize_categories et normalize_ingredients.
-
-    Args:
-        input_file_key:                   Clé S3 du parquet validé (silver brut).
-        ingredients_output_key:           Clé S3 de sortie pour la table ingredients.
-        product_ingredients_output_key:   Clé S3 de sortie pour la jonction.
+    La table products est produite par finalize_products après l'exécution
+    parallèle de normalize_categories et normalize_ingredients.
     """
     s3_bucket     = os.environ["S3_BUCKET"]
     s3_endpoint   = os.environ["S3_ENDPOINT"]
@@ -202,20 +214,17 @@ def handle(
     raw = s3_handler.download_to_memory(input_file_key)
     df  = pd.read_parquet(raw)
 
-    # -----------------------------------------------------------------------
-    # Diagnostic
-    # -----------------------------------------------------------------------
     if "ingredients_tags" not in df.columns:
         logger.error(
             "COLONNE 'ingredients_tags' ABSENTE DU PARQUET. "
             f"Colonnes disponibles : {df.columns.tolist()}"
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["ingredient_name"]),
+            pd.DataFrame(columns=["ingredient_id", "ingredient_name"]),
             ingredients_output_key,
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["code", "ingredient_name"]),
+            pd.DataFrame(columns=["code", "ingredient_id"]),
             product_ingredients_output_key,
         )
         return
@@ -229,9 +238,6 @@ def handle(
         f"sample values={[repr(v)[:60] for v in sample]}"
     )
 
-    # -----------------------------------------------------------------------
-    # Normalisation
-    # -----------------------------------------------------------------------
     ingredients_txt = _download_ingredients_txt(INGREDIENTS_TXT_URL)
     canonical_map   = _parse_taxonomy(ingredients_txt)
 
@@ -244,29 +250,21 @@ def handle(
         all_tags.update(tags)
     logger.info(f"Unique normalized ingredients: {len(all_tags)}")
 
-    # -----------------------------------------------------------------------
-    # Construction des tables
-    # -----------------------------------------------------------------------
-    df_ingredients = _build_ingredients_table(all_tags)
+    df_ingredients, tag_to_id = _build_ingredients_table(all_tags)
 
-    valid_ingredients = set(df_ingredients["ingredient_name"])
     junction_rows = [
-        {"code": row["code"], "ingredient_name": tag}
+        {"code": row["code"], "ingredient_id": tag_to_id[tag]}
         for _, row in df[["code", "ingredients_tags"]].iterrows()
         for tag in row["ingredients_tags"]
-        if tag in valid_ingredients
+        if tag in tag_to_id
     ]
     df_product_ingredients = pd.DataFrame(
         junction_rows if junction_rows else [],
-        columns=["code", "ingredient_name"],
+        columns=["code", "ingredient_id"],
     )
 
-    # -----------------------------------------------------------------------
-    # Upload
-    # -----------------------------------------------------------------------
     s3_handler.upload_dataframe(df_ingredients, ingredients_output_key)
     logger.info(f"ingredients uploaded → {ingredients_output_key} ({len(df_ingredients)} records)")
 
     s3_handler.upload_dataframe(df_product_ingredients, product_ingredients_output_key)
     logger.info(f"product_ingredients uploaded → {product_ingredients_output_key} ({len(df_product_ingredients)} records)")
-    

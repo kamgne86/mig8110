@@ -1,5 +1,6 @@
 import ast
 import os
+import hashlib
 import logging
 import requests
 import pandas as pd
@@ -12,6 +13,20 @@ CATEGORIES_TXT_URL = (
     "https://raw.githubusercontent.com/openfoodfacts/"
     "openfoodfacts-server/main/taxonomies/food/categories.txt"
 )
+
+
+# ---------------------------------------------------------------------------
+# Utilitaire — ID stable par hash
+# ---------------------------------------------------------------------------
+
+def _stable_id(name: str) -> int:
+    """Génère un ID entier positif stable depuis un nom canonique OFF.
+
+    16 hex chars = 64 bits → collision quasi-impossible même pour 80 000 entrées.
+    Modulo 2^63 pour rester dans les limites du BIGINT signé de DuckDB.
+    Même nom = même ID garanti entre initial load et tous les deltas futurs.
+    """
+    return int(hashlib.md5(name.encode()).hexdigest()[:16], 16) % (2 ** 63)
 
 
 # ---------------------------------------------------------------------------
@@ -102,21 +117,11 @@ def _parse_taxonomy(text):
 # ---------------------------------------------------------------------------
 
 def _to_list(tags):
-    """Convertit categories_tags vers une liste Python, peu importe son type.
-
-    Le parquet peut stocker cette colonne sous plusieurs formes :
-      - None / float NaN       → vide
-      - str  "['en:x', ...]"   → ast.literal_eval
-      - list ['en:x', ...]     → déjà bon
-      - np.ndarray             → list()
-      - tout autre iterable    → list()
-    """
+    """Convertit categories_tags vers une liste Python, peu importe son type."""
     if tags is None:
         return []
-    # NaN float (pandas remplace les nulls par NaN pour dtype=object)
     if isinstance(tags, float) and np.isnan(tags):
         return []
-    # String repr de liste (cas typique après lecture CSV ou parquet object)
     if isinstance(tags, str):
         tags = tags.strip()
         if not tags or tags == "[]":
@@ -126,10 +131,8 @@ def _to_list(tags):
             return list(parsed) if isinstance(parsed, (list, tuple)) else []
         except (ValueError, SyntaxError):
             return []
-    # Déjà une liste Python
     if isinstance(tags, list):
         return tags
-    # numpy array ou autre séquence
     try:
         return [t for t in tags if isinstance(t, str)]
     except TypeError:
@@ -155,11 +158,19 @@ def _normalize_tags(tags, canonical_map):
 
 
 # ---------------------------------------------------------------------------
-# 4. Construction de la table categories (avec hiérarchie)
+# 4. Construction de la table categories (avec IDs stables)
 # ---------------------------------------------------------------------------
 
 def _build_categories_table(all_tags, parent_map):
-    """Table categories avec category_name (PK) et parent_category_name."""
+    """Table categories avec IDs stables par hash.
+
+    category_id        : hash MD5 (64 bits, mod 2^63) du category_name
+    category_name      : tag canonique OFF (clé naturelle lisible)
+    parent_category_id : hash MD5 du parent, ou None si racine
+
+    Les IDs stables garantissent que les FK dans product_categories restent
+    cohérentes entre l'initial load et tous les deltas futurs.
+    """
     tags_to_include = set(all_tags)
     for tag in list(all_tags):
         parent = parent_map.get(tag)
@@ -167,18 +178,23 @@ def _build_categories_table(all_tags, parent_map):
             tags_to_include.add(parent)
             parent = parent_map.get(parent)
 
-    rows = []
-    for tag in sorted(tags_to_include):
-        parent_tag = parent_map.get(tag)
-        rows.append({
-            "category_name":        tag,
-            "parent_category_name": parent_tag if parent_tag in tags_to_include else None,
-        })
+    tag_to_id = {tag: _stable_id(tag) for tag in tags_to_include}
 
-    if not rows:
-        return pd.DataFrame(columns=["category_name", "parent_category_name"])
+    if not tag_to_id:
+        return pd.DataFrame({
+            "category_id":        pd.array([], dtype=pd.Int64Dtype()),
+            "category_name":      pd.array([], dtype="string"),
+            "parent_category_id": pd.array([], dtype=pd.Int64Dtype()),
+        }), {}
 
-    return pd.DataFrame(rows)
+    tags       = list(tag_to_id.keys())
+    parent_ids = [tag_to_id.get(parent_map.get(tag)) for tag in tags]
+    df = pd.DataFrame({
+        "category_id":        pd.array(list(tag_to_id.values()), dtype=pd.Int64Dtype()),
+        "category_name":      tags,
+        "parent_category_id": pd.array(parent_ids, dtype=pd.Int64Dtype()),
+    })
+    return df, tag_to_id
 
 
 # ---------------------------------------------------------------------------
@@ -202,20 +218,17 @@ def handle(
     raw = s3_handler.download_to_memory(input_file_key)
     df  = pd.read_parquet(raw)
 
-    # -----------------------------------------------------------------------
-    # DIAGNOSTIC — affiche l'état réel de categories_tags dans le parquet
-    # -----------------------------------------------------------------------
     if "categories_tags" not in df.columns:
         logger.error(
             "COLONNE 'categories_tags' ABSENTE DU PARQUET. "
             f"Colonnes disponibles : {df.columns.tolist()}"
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["category_name", "parent_category_name"]),
+            pd.DataFrame(columns=["category_id", "category_name", "parent_category_id"]),
             categories_output_key,
         )
         s3_handler.upload_dataframe(
-            pd.DataFrame(columns=["code", "category_name"]),
+            pd.DataFrame(columns=["code", "category_id"]),
             product_categories_output_key,
         )
         return
@@ -228,7 +241,6 @@ def handle(
         f"sample types={[type(v).__name__ for v in sample]} | "
         f"sample values={[repr(v)[:60] for v in sample]}"
     )
-    # -----------------------------------------------------------------------
 
     categories_txt = _download_categories_txt(CATEGORIES_TXT_URL)
     canonical_map, parent_map = _parse_taxonomy(categories_txt)
@@ -242,18 +254,17 @@ def handle(
         all_tags.update(tags)
     logger.info(f"Unique normalized categories: {len(all_tags)}")
 
-    df_categories = _build_categories_table(all_tags, parent_map)
-    valid_categories = set(df_categories["category_name"])
+    df_categories, tag_to_id = _build_categories_table(all_tags, parent_map)
 
     junction_rows = [
-        {"code": row["code"], "category_name": tag}
+        {"code": row["code"], "category_id": tag_to_id[tag]}
         for _, row in df[["code", "categories_tags"]].iterrows()
         for tag in row["categories_tags"]
-        if tag in valid_categories
+        if tag in tag_to_id
     ]
     df_product_categories = pd.DataFrame(
         junction_rows if junction_rows else [],
-        columns=["code", "category_name"],
+        columns=["code", "category_id"],
     )
 
     s3_handler.upload_dataframe(df_categories, categories_output_key)

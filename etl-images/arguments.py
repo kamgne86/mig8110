@@ -64,6 +64,13 @@ country = click.option(
     help='Country to filter delta records on (substring match against countries_tags, default: canada)'
 )
 
+lang = click.option(
+    '--lang',
+    type=str,
+    default=None,
+    help='Language to filter records on (exact match against lang column, e.g. fr, en)'
+)
+
 columns = click.option(
     '--columns',
     type=str,
