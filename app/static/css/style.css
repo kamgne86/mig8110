@@ -362,10 +362,20 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
   box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
 }
 
-.tag-link.category-hierarchical { padding: 8px 14px; }
-.cat-parent { font-size: 11px; font-weight: 400; opacity: 0.75; }
-.cat-separator { margin: 0 4px; opacity: 0.5; }
-.cat-child { font-weight: 600; }
+.category-path {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-link.category-segment {
+  padding: 6px 12px;
+}
+
+.cat-parent { font-size: 12px; font-weight: 500; }
+.cat-separator { margin: 0 2px; opacity: 0.5; }
+.cat-child { font-weight: 700; }
 
 /* ─── Badges nutriscore / ecoscore (legacy simple badge) ───────────────────── */
 .badge {
@@ -500,6 +510,29 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
   margin-top: 12px;
 }
 
+.similar-selection-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #d8e1ef;
+  border-radius: 12px;
+  background: #eef4ff;
+}
+
+.similar-selection-summary {
+  margin: 0;
+  font-size: 14px;
+  color: #334155;
+}
+
+.similar-selection-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .similar-card {
   display: flex;
   align-items: stretch;
@@ -508,6 +541,11 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
   border-radius: 12px;
   background: #f8fafc;
   padding: 12px;
+}
+
+.similar-card.selected {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.14);
 }
 
 .similar-media {
@@ -537,6 +575,26 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.similar-card-top {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.similar-select-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475467;
+}
+
+.similar-select-input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary);
 }
 
 .similar-title {
@@ -614,6 +672,13 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
 }
 
 .similar-card .detail-btn {
+  align-self: center;
+}
+
+.similar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   align-self: center;
 }
 
@@ -996,6 +1061,16 @@ input[type="range"] { width: 100%; accent-color: var(--color-primary); }
 
 /* ─── Responsive ────────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
+  .similar-selection-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .similar-selection-actions {
+    width: 100%;
+  }
+  .similar-selection-actions .small-btn {
+    flex: 1;
+  }
   .ingredients-row  { flex-direction: column; }
   .detail-image-box { width: 100%; }
   .similar-card {

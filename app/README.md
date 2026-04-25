@@ -14,13 +14,11 @@ pip install -r requirements.txt
 echo "DUCKDB_TOKEN=ton_token" >> .env
 echo "DUCKDB_DB=ton_database" >> .env
 
-# Optionnel : activer la normalisation LLM et les embeddings OpenAI
+# Optionnel : activer la similarite semantique OpenAI
 echo "OPENAI_API_KEY=ton_openai_api_key" >> .env
-echo "OPENAI_ALIAS_MODEL=gpt-4o-mini" >> .env
-echo "OPENAI_EMBEDDING_MODEL=text-embedding-3-small" >> .env
-
-# Optionnel : changer le fichier de cache persistant des alias
-echo "ALIAS_CACHE_PATH=./alias_normalization_cache.json" >> .env
+echo "OPENAI_EMBEDDING_MODEL=text-embedding-3-large" >> .env
+echo "OPENAI_NORMALIZATION_MODEL=gpt-4.1" >> .env
+echo "OPENAI_LLM_MODEL=gpt-5" >> .env
 ```
 
 ### Lancer l'API
@@ -54,7 +52,7 @@ GET /products?ingredient=tomate         # Produits contenant l'ingredient
 # Produit specifique
 GET /products/0068200466583             # Details complets
 
-# Produits similaires rerankes
+# Produits similaires
 GET /products/0068200466583/similar
 ```
 

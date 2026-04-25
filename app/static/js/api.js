@@ -11,6 +11,12 @@ async function fetchProducts(searchParams) {
   return res.json();
 }
 
+async function fetchCategories() {
+  const res = await fetch(`${API_BASE}/products/categories`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 async function fetchProduct(code) {
   const res = await fetch(`${API_BASE}/products/${encodeURIComponent(code)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
