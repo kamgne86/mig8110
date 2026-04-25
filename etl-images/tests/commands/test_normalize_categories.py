@@ -9,6 +9,7 @@ from commands.normalize_categories import (
     _parse_taxonomy,
     _normalize_tags,
     _build_categories_table,
+    _build_ancetre_categories,
     _stable_id,
     handle,
 )
@@ -76,6 +77,35 @@ en:food
 """
 
 
+@pytest.fixture
+def taxonomy_text_multi_parent():
+    """Taxonomie avec plusieurs lignes < pour tester la sélection du bon parent.
+
+    en:simple-syrups a deux parents dans categories.txt :
+        < en:sweeteners  (premier  — plus général)
+        < en:syrups      (dernier  — plus spécifique → doit être retenu)
+
+    Ce cas reproduit exactement le bug trouvé en production où
+    en:maple-syrups ne remontait pas jusqu'à en:syrups.
+    """
+    return """
+en:food
+
+en:sweeteners
+< en:food
+
+en:syrups
+< en:sweeteners
+
+en:simple-syrups
+< en:sweeteners
+< en:syrups
+
+en:maple-syrups
+< en:simple-syrups
+"""
+
+
 # ---------------------------------------------------------------------------
 # Tests _to_list
 # ---------------------------------------------------------------------------
@@ -125,7 +155,6 @@ class TestParseTaxonomy:
 
     def test_synonym_maps_to_canonical(self, taxonomy_text):
         canonical_map, _ = _parse_taxonomy(taxonomy_text)
-        # "Pure maple syrup" → en:pure-maple-syrup, doit pointer vers le canonique en:maple-syrups
         assert canonical_map.get("en:pure-maple-syrup") == "en:maple-syrups"
 
     def test_parent_map_contains_parent(self, taxonomy_text):
@@ -141,6 +170,34 @@ class TestParseTaxonomy:
         canonical_map, parent_map = _parse_taxonomy("")
         assert canonical_map == {}
         assert parent_map == {}
+
+    def test_multi_parent_keeps_last_parent(self, taxonomy_text_multi_parent):
+        """Quand une catégorie a plusieurs lignes <, le dernier parent doit être retenu.
+
+        En:simple-syrups a < en:sweeteners puis < en:syrups dans categories.txt.
+        Le dernier (en:syrups) est le plus spécifique et doit être le parent retenu
+        pour permettre la remontée correcte de la hiérarchie.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text_multi_parent)
+        assert parent_map["en:simple-syrups"] == "en:syrups"
+
+    def test_parent_tag_spaces_normalized_to_hyphens(self):
+        """Les espaces dans les lignes < doivent être convertis en tirets.
+
+        categories.txt peut contenir '< en:Simple syrups' (avec espace).
+        Sans normalisation, 'en:simple syrups' != 'en:simple-syrups' → chaîne cassée.
+        """
+        text = """
+en:sweeteners
+
+en:simple syrups
+< en:sweeteners
+
+en:maple-syrups
+< en:Simple syrups
+"""
+        _, parent_map = _parse_taxonomy(text)
+        assert parent_map.get("en:maple-syrups") == "en:simple-syrups"
 
 
 # ---------------------------------------------------------------------------
@@ -198,23 +255,25 @@ class TestBuildCategoriesTable:
         assert "en:syrups" in names
         assert "en:sweeteners" in names
 
+    def test_full_chain_included_even_if_intermediate_already_present(self, taxonomy_text):
+        """Si un ancêtre intermédiaire est déjà dans all_tags, la remontée ne doit
+        pas s'arrêter — tous les ancêtres jusqu'à la racine doivent être inclus.
+
+        Cas : all_tags = {en:maple-syrups, en:syrups}
+        En:syrups est déjà présent mais en:sweeteners et en:food doivent
+        quand même être ajoutés via la remontée depuis en:maple-syrups.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        df, _ = _build_categories_table({"en:maple-syrups", "en:syrups"}, parent_map)
+        names = set(df["category_name"])
+        assert "en:sweeteners" in names
+        assert "en:food" in names
+
     def test_category_id_is_stable_hash(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
         df, _ = _build_categories_table({"en:maple-syrups"}, parent_map)
         row = df[df["category_name"] == "en:maple-syrups"].iloc[0]
         assert row["category_id"] == _stable_id("en:maple-syrups")
-
-    def test_parent_category_id_set(self, taxonomy_text):
-        _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, _ = _build_categories_table({"en:maple-syrups"}, parent_map)
-        row = df[df["category_name"] == "en:maple-syrups"].iloc[0]
-        assert row["parent_category_id"] == _stable_id("en:syrups")
-
-    def test_root_has_no_parent(self, taxonomy_text):
-        _, parent_map = _parse_taxonomy(taxonomy_text)
-        df, _ = _build_categories_table({"en:food"}, parent_map)
-        row = df[df["category_name"] == "en:food"].iloc[0]
-        assert pd.isna(row["parent_category_id"])
 
     def test_tag_to_id_returned(self, taxonomy_text):
         _, parent_map = _parse_taxonomy(taxonomy_text)
@@ -226,8 +285,67 @@ class TestBuildCategoriesTable:
         _, parent_map = _parse_taxonomy(taxonomy_text)
         df, tag_to_id = _build_categories_table(set(), parent_map)
         assert len(df) == 0
-        assert list(df.columns) == ["category_id", "category_name", "parent_category_id"]
+        assert list(df.columns) == ["category_id", "category_name"]
         assert tag_to_id == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests _build_ancetre_categories
+# ---------------------------------------------------------------------------
+
+class TestBuildAncetreCategories:
+
+    def test_parent_relationship(self, taxonomy_text):
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        _, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+        row = df[(df["category_id"] == _stable_id("en:maple-syrups")) & (df["distance"] == 1)]
+        assert len(row) == 1
+        assert row.iloc[0]["category_id_parent"] == _stable_id("en:syrups")
+
+    def test_full_chain_distances(self, taxonomy_text):
+        """La chaîne complète en:maple-syrups → en:syrups → en:sweeteners → en:food
+        doit produire les distances 1, 2, 3 correctement.
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        _, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+
+        maple_rows = df[df["category_id"] == _stable_id("en:maple-syrups")].copy()
+        maple_rows = maple_rows.set_index("distance")
+
+        assert maple_rows.loc[1, "category_id_parent"] == _stable_id("en:syrups")
+        assert maple_rows.loc[2, "category_id_parent"] == _stable_id("en:sweeteners")
+        assert maple_rows.loc[3, "category_id_parent"] == _stable_id("en:food")
+
+    def test_root_has_no_ancestors(self, taxonomy_text):
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        _, tag_to_id = _build_categories_table({"en:food"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+        root_rows = df[df["category_id"] == _stable_id("en:food")]
+        assert len(root_rows) == 0
+
+    def test_empty_input_returns_empty_df(self, taxonomy_text):
+        _, parent_map = _parse_taxonomy(taxonomy_text)
+        df = _build_ancetre_categories({}, parent_map)
+        assert len(df) == 0
+        assert list(df.columns) == ["category_id", "category_id_parent", "distance"]
+
+    def test_multi_parent_chain(self, taxonomy_text_multi_parent):
+        """Vérifie la chaîne complète quand une catégorie a plusieurs lignes <.
+
+        en:maple-syrups → en:simple-syrups (d=1) → en:syrups (d=2) → en:sweeteners (d=3)
+        """
+        _, parent_map = _parse_taxonomy(taxonomy_text_multi_parent)
+        _, tag_to_id = _build_categories_table({"en:maple-syrups"}, parent_map)
+        df = _build_ancetre_categories(tag_to_id, parent_map)
+
+        maple_rows = df[df["category_id"] == _stable_id("en:maple-syrups")].copy()
+        maple_rows = maple_rows.set_index("distance")
+
+        assert maple_rows.loc[1, "category_id_parent"] == _stable_id("en:simple-syrups")
+        assert maple_rows.loc[2, "category_id_parent"] == _stable_id("en:syrups")
+        assert maple_rows.loc[3, "category_id_parent"] == _stable_id("en:sweeteners")
 
 
 # ---------------------------------------------------------------------------
@@ -236,21 +354,26 @@ class TestBuildCategoriesTable:
 
 class TestHandle:
 
-    def test_two_parquets_uploaded(self, mock_env_vars, sample_df):
-        """handle() doit uploader exactement 2 parquets (categories + product_categories).
-        La table products est produite par finalize_products."""
+    def test_three_parquets_uploaded(self, mock_env_vars, sample_df):
+        """handle() doit uploader exactement 3 parquets : categories, ancetre_categories, categorie_principale."""
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt") as mock_dl:
             mock_dl.return_value = """
 en:sweeteners
+
 en:syrups
 < en:sweeteners
+
 en:maple-syrups
 < en:syrups
+
 en:beverages
+
 en:plant-based-beverages
 < en:beverages
+
 en:snacks
+
 en:salty-snacks
 < en:snacks
 """
@@ -258,27 +381,34 @@ en:salty-snacks
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("input.parquet", "categories.parquet", "product_categories.parquet")
+            handle("input.parquet", "categories.parquet", "ancetre_categories.parquet", "categorie_principale.parquet")
 
-            assert mock_s3_instance.upload_dataframe.call_count == 2
+            assert mock_s3_instance.upload_dataframe.call_count == 3
             keys = [call[0][1] for call in mock_s3_instance.upload_dataframe.call_args_list]
             assert "categories.parquet" in keys
-            assert "product_categories.parquet" in keys
+            assert "ancetre_categories.parquet" in keys
+            assert "categorie_principale.parquet" in keys
 
-    def test_product_categories_fk_integrity(self, mock_env_vars, sample_df):
-        """Tous les category_id dans product_categories existent dans categories."""
+    def test_categorie_principale_fk_integrity(self, mock_env_vars, sample_df):
+        """Toutes les categorie_principale non-nulles existent dans categories.category_id."""
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt") as mock_dl:
             mock_dl.return_value = """
 en:sweeteners
+
 en:syrups
 < en:sweeteners
+
 en:maple-syrups
 < en:syrups
+
 en:beverages
+
 en:plant-based-beverages
 < en:beverages
+
 en:snacks
+
 en:salty-snacks
 < en:snacks
 """
@@ -286,29 +416,30 @@ en:salty-snacks
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(sample_df)
 
-            handle("input.parquet", "categories.parquet", "product_categories.parquet")
+            handle("input.parquet", "categories.parquet", "ancetre_categories.parquet", "categorie_principale.parquet")
 
             uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
             cat_ids = set(uploaded["categories.parquet"]["category_id"])
-            junc_ids = set(uploaded["product_categories.parquet"]["category_id"])
-            assert junc_ids.issubset(cat_ids)
+            cp_ids = set(uploaded["categorie_principale.parquet"]["categorie_principale"].dropna())
+            assert cp_ids.issubset(cat_ids)
 
     def test_missing_env_var_raises(self, sample_df):
         """KeyError si les variables S3 sont absentes."""
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(KeyError, match="S3_BUCKET"):
-                handle("input.parquet", "categories.parquet", "product_categories.parquet")
+            with pytest.raises(KeyError):
+                handle("input.parquet", "categories.parquet", "ancetre_categories.parquet", "categorie_principale.parquet")
 
     def test_missing_categories_tags_column(self, mock_env_vars):
-        """Si categories_tags est absente, 2 parquets vides sont quand même uploadés."""
+        """Si categories_tags est absente, 3 parquets vides sont quand même uploadés."""
         df_without_col = pd.DataFrame({"code": ["001"], "product_name": ["X"]})
         with patch("commands.normalize_categories.S3FileHandler") as mock_s3, \
              patch("commands.normalize_categories._download_categories_txt"):
             mock_s3_instance = Mock()
             mock_s3.return_value = mock_s3_instance
             mock_s3_instance.download_to_memory.return_value = _df_to_parquet_bytes(df_without_col)
-            handle("input.parquet", "categories.parquet", "product_categories.parquet")
-            assert mock_s3_instance.upload_dataframe.call_count == 2
+            handle("input.parquet", "categories.parquet", "ancetre_categories.parquet", "categorie_principale.parquet")
+            assert mock_s3_instance.upload_dataframe.call_count == 3
             uploaded = {call[0][1]: call[0][0] for call in mock_s3_instance.upload_dataframe.call_args_list}
-            assert list(uploaded["categories.parquet"].columns) == ["category_id", "category_name", "parent_category_id"]
-            assert list(uploaded["product_categories.parquet"].columns) == ["code", "category_id"]
+            assert list(uploaded["categories.parquet"].columns) == ["category_id", "category_name"]
+            assert list(uploaded["ancetre_categories.parquet"].columns) == ["category_id", "category_id_parent", "distance"]
+            assert list(uploaded["categorie_principale.parquet"].columns) == ["code", "categorie_principale"]

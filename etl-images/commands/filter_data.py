@@ -6,9 +6,24 @@ from common.s3 import S3FileHandler
 logger = logging.getLogger(__name__)
 
 
+def _parse_tags(tags):
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        import ast
+        try:
+            parsed = ast.literal_eval(tags)
+            return parsed if isinstance(parsed, list) else []
+        except (ValueError, SyntaxError):
+            return []
+    try:
+        return list(tags)
+    except TypeError:
+        return []
+
+
 def _matches_country(tags, country):
-    """Check if any of the countries_tags contains the given country string."""
-    return isinstance(tags, list) and any(country.lower() in tag.lower() for tag in tags)
+    return any(country.lower() in tag.lower() for tag in _parse_tags(tags))
 
 
 def _matches_lang(lang_value, lang):

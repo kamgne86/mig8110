@@ -7,7 +7,7 @@ from common.s3 import S3FileHandler
 logger = logging.getLogger(__name__)
 
 
-def handle(input_file_key, table_name, schema_name, key_column="code"):
+def handle(input_file_key, table_name, schema_name, key_column="code", key_column2=None):
     """Download a transformed delta parquet from S3 and upsert it into MotherDuck.
 
     Uses a DELETE + INSERT pattern keyed on `key_column` (default: `code`):
@@ -26,6 +26,9 @@ def handle(input_file_key, table_name, schema_name, key_column="code"):
         table_name: Target table name in MotherDuck.
         schema_name: Target schema name in MotherDuck.
         key_column: Column used to identify rows to delete before re-inserting (default: "code").
+        key_column2: Optional second column for composite key DELETE (ex: ancetre_categories
+                     uses (category_id, category_id_parent) pour éviter de supprimer
+                     toutes les relations d'une catégorie lors d'un delta partiel).
     """
     s3_bucket = os.environ["S3_BUCKET"]
     s3_endpoint = os.environ["S3_ENDPOINT"]
@@ -53,10 +56,17 @@ def handle(input_file_key, table_name, schema_name, key_column="code"):
         # si l'INSERT échoue, le DELETE est annulé (ROLLBACK) et la table reste intacte.
         con.sql("BEGIN TRANSACTION")
         try:
-            con.sql(
-                f"DELETE FROM {schema_name}.{table_name} "
-                f"WHERE {key_column} IN (SELECT {key_column} FROM read_parquet('{tmp.name}'))"
-            )
+            if key_column2:
+                con.sql(
+                    f"DELETE FROM {schema_name}.{table_name} "
+                    f"WHERE ({key_column}, {key_column2}) IN "
+                    f"(SELECT {key_column}, {key_column2} FROM read_parquet('{tmp.name}'))"
+                )
+            else:
+                con.sql(
+                    f"DELETE FROM {schema_name}.{table_name} "
+                    f"WHERE {key_column} IN (SELECT {key_column} FROM read_parquet('{tmp.name}'))"
+                )
             con.sql(f"INSERT INTO {schema_name}.{table_name} SELECT * FROM read_parquet('{tmp.name}')")
             con.sql("COMMIT")
         except Exception:

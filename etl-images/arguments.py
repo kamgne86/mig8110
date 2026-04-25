@@ -92,11 +92,25 @@ categories_output_key = click.option(
     help='Output file key in S3 for the categories parquet'
 )
 
-product_categories_output_key = click.option(
-    '--product_categories_output_key',
+ancetre_categories_output_key = click.option(
+    '--ancetre_categories_output_key',
     type=str,
     default=None,
-    help='Output file key in S3 for the product_categories junction parquet'
+    help='Output file key in S3 for the ancetre_categories closure parquet'
+)
+
+categorie_principale_output_key = click.option(
+    '--categorie_principale_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the categorie_principale parquet'
+)
+
+categorie_principale_input_key = click.option(
+    '--categorie_principale_input_key',
+    type=str,
+    default=None,
+    help='Input file key in S3 for the categorie_principale parquet (used by finalize_products)'
 )
 
 ingredients_output_key = click.option(
@@ -113,9 +127,30 @@ product_ingredients_output_key = click.option(
     help='Output file key in S3 for the product_ingredients junction parquet'
 )
 
+sous_ingredients_output_key = click.option(
+    '--sous_ingredients_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the sous_ingredients parquet'
+)
+
+ingredient_alias_output_key = click.option(
+    '--ingredient_alias_output_key',
+    type=str,
+    default=None,
+    help='Output file key in S3 for the ingredient_alias parquet'
+)
+
 key_column = click.option(
     '--key_column',
     type=str,
     default='code',
     help='Column used as key for the DELETE + INSERT upsert in load_delta (default: code)'
+)
+
+key_column2 = click.option(
+    '--key_column2',
+    type=str,
+    default=None,
+    help='Optional second column for composite key DELETE in load_delta (ex: category_id_parent pour ancetre_categories)'
 )

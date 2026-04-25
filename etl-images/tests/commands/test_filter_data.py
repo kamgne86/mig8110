@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import pytest
 import pandas as pd
 from io import BytesIO
@@ -17,7 +18,14 @@ class TestMatchesCountry:
     def test_case_insensitive(self):
         assert _matches_country(["en:Canada"], "canada") is True
 
-    def test_not_a_list(self):
+    def test_ndarray(self):
+        assert _matches_country(np.array(["en:canada", "en:united-states"]), "canada") is True
+        assert _matches_country(np.array(["en:france"]), "canada") is False
+
+    def test_string_list_repr(self):
+        assert _matches_country("['en:canada', 'en:france']", "canada") is True
+
+    def test_none_or_invalid(self):
         assert _matches_country(None, "canada") is False
         assert _matches_country("en:canada", "canada") is False
 
