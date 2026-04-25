@@ -4,8 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Détail produit</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260422_2" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260425_1" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <div class="page">
@@ -89,9 +90,27 @@
     </div>
   </div>
 
+  <div id="compareModal" class="modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2>Comparaison</h2>
+        <button class="modal-close" onclick="fermerComparaison()">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div id="radarChartContainer" style="max-width: 600px; margin: 0 auto 24px; display: none;">
+          <canvas id="radarChart"></canvas>
+        </div>
+        <div id="compareContent" class="compare-grid"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
-  <script src="/static/js/utils.js?v=20260422_1"></script>
-  <script src="/static/js/api.js?v=20260422_1"></script>
-  <script src="/static/js/pages/detail.js?v=20260422_1"></script>
+  <script src="/static/js/utils.js?v=20260425_1"></script>
+  <script src="/static/js/state.js?v=20260424_7"></script>
+  <script src="/static/js/api.js?v=20260425_1"></script>
+  <script src="/static/js/components/insights.js?v=20260425_1"></script>
+  <script src="/static/js/components/comparison.js?v=20260425_1"></script>
+  <script src="/static/js/pages/detail.js?v=20260425_1"></script>
 </body>
 </html>

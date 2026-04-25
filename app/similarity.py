@@ -1,35 +1,50 @@
+import json
 import logging
 import math
 import re
 import unicodedata
 from collections import Counter
-from functools import lru_cache
-from typing import Dict, List, Optional, Sequence
+from threading import Lock
+from typing import Any, Dict, List, Optional, Sequence
 
-from alias_cache import get_alias_cache_entries, save_alias_cache_entries
 from models import (
-    INGREDIENTS_TABLE,
+    CATEGORIES_TABLE,
+    PRODUCT_INGREDIENTS_TABLE,
     clean_name,
     execute_query,
+    get_ancestor_categories_table,
+    get_category_links_sql,
     get_ingredient_alias_table,
     get_product_by_code,
     get_products_by_codes,
     get_products_list,
 )
-from openai_utils import OpenAIUnavailableError, get_text_embeddings, is_openai_available, normalize_aliases_with_llm
+from openai_utils import (
+    OpenAIUnavailableError,
+    get_structured_json_response,
+    get_text_embeddings,
+    is_openai_available,
+)
+from config import OPENAI_NORMALIZATION_MODEL
 
 logger = logging.getLogger(__name__)
 
-NUTRIENT_KEYS = [
-    "energy_kcal_100g",
-    "fat_100g",
+NUTRITION_VECTOR_KEYS = [
     "sugars_100g",
-    "salt_100g",
-    "proteins_100g",
     "carbohydrates_100g",
+    "fat_100g",
+    "proteins_100g",
+    "salt_100g",
     "fiber_100g",
-    "saturated_fat_100g",
 ]
+
+NUTRISCORE_ORDER = {
+    "a": 5,
+    "b": 4,
+    "c": 3,
+    "d": 2,
+    "e": 1,
+}
 
 STOPWORDS = {
     "a",
@@ -64,23 +79,9 @@ STOPWORDS = {
     "with",
 }
 
-NOISE_TOKENS = {
-    "calories",
-    "contains",
-    "daily",
-    "free",
-    "guaranteed",
-    "ingredients",
-    "less",
-    "more",
-    "nutrition",
-    "percent",
-    "per",
-    "serving",
-    "storage",
-    "valeur",
-    "quotidienne",
-}
+LLM_NORMALIZATION_BATCH_SIZE = 12
+_NORMALIZED_TERMS_CACHE: Dict[str, List[str]] = {}
+_NORMALIZED_TERMS_CACHE_LOCK = Lock()
 
 
 def normalize_text(value: object) -> str:
@@ -129,6 +130,21 @@ def cosine_similarity_sparse(left: Dict[str, float], right: Dict[str, float]) ->
     if not left_norm or not right_norm:
         return 0.0
     return numerator / (left_norm * right_norm)
+
+
+def euclidean_similarity_dense(left: Sequence[float], right: Sequence[float]) -> float:
+    if not left or not right:
+        return 0.0
+
+    distance = math.sqrt(sum((a - b) * (a - b) for a, b in zip(left, right)))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    scale = left_norm + right_norm
+    if not scale:
+        return 0.0
+
+    # Normalise la distance euclidienne pour obtenir un score interpretable entre 0 et 1.
+    return max(0.0, 1.0 - (distance / scale))
 
 
 def get_category_labels(product: Optional[Dict]) -> List[str]:
@@ -192,6 +208,294 @@ def get_top_ingredients(product: Optional[Dict], max_items: int = 8) -> List[str
     return out
 
 
+def normalize_numeric_feature(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if not math.isfinite(numeric):
+        return 0.0
+
+    return math.log1p(max(numeric, 0.0))
+
+
+def get_nutriscore_value(product: Optional[Dict]) -> float:
+    grade = str((product or {}).get("nutriscore_grade") or "").strip().lower()
+    return float(NUTRISCORE_ORDER.get(grade, 0.0))
+
+
+def build_nutrition_vector(product: Optional[Dict]) -> List[float]:
+    product = product or {}
+    vector = [normalize_numeric_feature(product.get(key)) for key in NUTRITION_VECTOR_KEYS]
+    vector.append(get_nutriscore_value(product) / 5.0)
+    return vector
+
+
+def get_product_aliases_map(codes: Sequence[str], max_items: int = 8) -> Dict[str, List[str]]:
+    ordered_codes = list(dict.fromkeys(str(code).strip() for code in codes if str(code).strip()))
+    alias_map: Dict[str, List[str]] = {code: [] for code in ordered_codes}
+    if not ordered_codes:
+        return alias_map
+
+    alias_table = get_ingredient_alias_table()
+    if not alias_table:
+        return alias_map
+
+    placeholders = ", ".join(["?"] * len(ordered_codes))
+    rows = execute_query(
+        f"""
+        SELECT pi.code, ia.alias_name
+        FROM {PRODUCT_INGREDIENTS_TABLE} pi
+        JOIN {alias_table} ia ON ia.ingredient_id = pi.ingredient_id
+        WHERE pi.code IN ({placeholders})
+          AND ia.alias_name IS NOT NULL
+          AND trim(ia.alias_name) <> ''
+        ORDER BY pi.code, pi.ingredient_order NULLS LAST, ia.alias_name
+        """,
+        ordered_codes,
+    )
+
+    seen_by_code = {code: set() for code in ordered_codes}
+    for row in rows:
+        product_code = str(row.get("code") or "").strip()
+        if product_code not in alias_map or len(alias_map[product_code]) >= max_items:
+            continue
+
+        alias_name = clean_name(str(row.get("alias_name") or "").strip())
+        alias_key = normalize_text(alias_name)
+        if not alias_name or not alias_key or alias_key in seen_by_code[product_code]:
+            continue
+
+        seen_by_code[product_code].add(alias_key)
+        alias_map[product_code].append(alias_name)
+
+    return alias_map
+
+
+def batch_items(items: Sequence[Any], size: int) -> List[List[Any]]:
+    if size <= 0:
+        return [list(items)]
+    return [list(items[index : index + size]) for index in range(0, len(items), size)]
+
+
+def dedupe_terms(values: Sequence[str], max_items: int = 8) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    for value in values:
+        clean = clean_name(str(value or "").strip())
+        key = normalize_text(clean)
+        if not clean or not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
+def get_llm_normalized_terms_by_code(
+    products: Sequence[Dict],
+    alias_map: Dict[str, List[str]],
+    max_items: int = 8,
+) -> Dict[str, List[str]]:
+    if not is_openai_available():
+        return {}
+
+    payload_items: List[Dict[str, Any]] = []
+    cache_keys_by_code: Dict[str, str] = {}
+    normalized_by_code: Dict[str, List[str]] = {}
+    for product in products:
+        product_code = str(product.get("code") or "").strip()
+        if not product_code:
+            continue
+        raw_terms = [
+            *get_top_ingredients(product, max_items=max_items),
+            *alias_map.get(product_code, [])[:max_items],
+        ]
+        payload_item = {
+            "code": product_code,
+            "product_name": str(product.get("product_name") or "").strip(),
+            "category": get_target_category(product),
+            "terms": dedupe_terms(raw_terms, max_items=max_items * 2),
+        }
+        cache_key = json.dumps(
+            {
+                "model": OPENAI_NORMALIZATION_MODEL,
+                "code": payload_item["code"],
+                "product_name": payload_item["product_name"],
+                "category": payload_item["category"],
+                "terms": payload_item["terms"],
+                "max_items": max_items,
+            },
+            ensure_ascii=False,
+        )
+        cache_keys_by_code[product_code] = cache_key
+
+        with _NORMALIZED_TERMS_CACHE_LOCK:
+            cached_terms = _NORMALIZED_TERMS_CACHE.get(cache_key)
+
+        if cached_terms is not None:
+            normalized_by_code[product_code] = list(cached_terms)
+            continue
+
+        payload_items.append(payload_item)
+
+    if not payload_items:
+        return normalized_by_code
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "products": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string"},
+                        "normalized_terms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["code", "normalized_terms"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["products"],
+        "additionalProperties": False,
+    }
+
+    for chunk in batch_items(payload_items, LLM_NORMALIZATION_BATCH_SIZE):
+        try:
+            response = get_structured_json_response(
+                instructions=(
+                    "Normalize product ingredient and alias terms. "
+                    "Merge close aliases into canonical ingredient labels, remove duplicates, "
+                    "remove packaging/noise terms, and keep at most 8 meaningful ingredients per product."
+                ),
+                user_input=json.dumps({"products": chunk}, ensure_ascii=False),
+                schema_name="normalized_product_terms",
+                schema=schema,
+                model=OPENAI_NORMALIZATION_MODEL,
+            )
+        except OpenAIUnavailableError as exc:
+            logger.warning("LLM ingredient normalization disabled for this run: %s", exc)
+            return normalized_by_code
+
+        for item in response.get("products", []):
+            if not isinstance(item, dict):
+                continue
+            product_code = str(item.get("code") or "").strip()
+            if not product_code:
+                continue
+            normalized_terms = dedupe_terms(item.get("normalized_terms", []), max_items=max_items)
+            if normalized_terms:
+                normalized_by_code[product_code] = normalized_terms
+                cache_key = cache_keys_by_code.get(product_code)
+                if cache_key:
+                    with _NORMALIZED_TERMS_CACHE_LOCK:
+                        _NORMALIZED_TERMS_CACHE[cache_key] = list(normalized_terms)
+
+    return normalized_by_code
+
+
+def build_semantic_text(
+    product: Dict,
+    aliases: Sequence[str],
+    normalized_terms: Optional[Sequence[str]] = None,
+) -> str:
+    name = str(product.get("product_name") or "").strip()
+    category = get_target_category(product)
+    ingredients = ", ".join(get_top_ingredients(product, max_items=8))
+    normalized_ingredients = ", ".join(dedupe_terms(normalized_terms or [], max_items=8))
+    alias_text = ", ".join(
+        list(
+            dict.fromkeys(
+                str(alias).strip()
+                for alias in aliases
+                if str(alias).strip()
+            )
+        )[:8]
+    )
+
+    lines = []
+    if name:
+        lines.append(f"Nom: {name}")
+    if category:
+        lines.append(f"Categorie: {category}")
+    if ingredients:
+        lines.append(f"Ingredients: {ingredients}")
+    if normalized_ingredients:
+        lines.append(f"Ingredients normalises: {normalized_ingredients}")
+    if alias_text:
+        lines.append(f"Alias: {alias_text}")
+    return "\n".join(lines)
+
+
+def build_product_category_context(products: Sequence[Dict]) -> Dict[str, Dict[str, set[str]]]:
+    ordered_codes = [
+        str(product.get("code") or "").strip()
+        for product in products
+        if str(product.get("code") or "").strip()
+    ]
+    context: Dict[str, Dict[str, set[str]]] = {
+        code: {"categories": set(), "parents": set(), "ancestors": set()}
+        for code in ordered_codes
+    }
+
+    for product in products:
+        product_code = str(product.get("code") or "").strip()
+        if product_code not in context:
+            continue
+
+        for label in get_category_labels(product):
+            normalized = normalize_text(label)
+            if normalized:
+                context[product_code]["categories"].add(normalized)
+
+        for label in get_parent_category_labels(product):
+            normalized = normalize_text(label)
+            if normalized:
+                context[product_code]["parents"].add(normalized)
+
+    ancestor_categories_table = get_ancestor_categories_table()
+    if not ancestor_categories_table or not ordered_codes:
+        return context
+
+    placeholders = ", ".join(["?"] * len(ordered_codes))
+    rows = execute_query(
+        f"""
+        WITH category_links AS (
+            {get_category_links_sql()}
+        )
+        SELECT DISTINCT cl.code, ancestor.category_name AS ancestor_name
+        FROM category_links cl
+        JOIN {ancestor_categories_table} a
+          ON cl.category_id = a.category_id
+        JOIN {CATEGORIES_TABLE} ancestor
+          ON ancestor.category_id = a.category_id_parent
+        WHERE cl.code IN ({placeholders})
+          AND a.distance > 1
+        """,
+        ordered_codes,
+    )
+
+    for row in rows:
+        product_code = str(row.get("code") or "").strip()
+        if product_code not in context:
+            continue
+
+        normalized = normalize_text(clean_name(str(row.get("ancestor_name") or "").strip()))
+        if normalized:
+            context[product_code]["ancestors"].add(normalized)
+
+    return context
+
+
 def build_tfidf_vectors(texts: List[str]) -> List[Dict[str, float]]:
     token_lists = [tokenize_text(text) for text in texts]
     document_frequency: Counter[str] = Counter()
@@ -237,7 +541,10 @@ def compute_text_similarities(base_text: str, candidate_texts: List[str]) -> Lis
             vectors = get_text_embeddings(nonempty_texts)
             base_vector = vectors[0]
             for local_index, global_index in enumerate(nonempty_indexes[1:], start=1):
-                dense_scores[global_index - 1] = cosine_similarity_dense(base_vector, vectors[local_index])
+                dense_scores[global_index - 1] = cosine_similarity_dense(
+                    base_vector,
+                    vectors[local_index],
+                )
             return [float(score or 0.0) for score in dense_scores]
         except OpenAIUnavailableError as exc:
             logger.warning("Embedding fallback to local TF-IDF: %s", exc)
@@ -245,294 +552,37 @@ def compute_text_similarities(base_text: str, candidate_texts: List[str]) -> Lis
     sparse_vectors = build_tfidf_vectors(nonempty_texts)
     base_vector = sparse_vectors[0]
     for local_index, global_index in enumerate(nonempty_indexes[1:], start=1):
-        dense_scores[global_index - 1] = cosine_similarity_sparse(base_vector, sparse_vectors[local_index])
+        dense_scores[global_index - 1] = cosine_similarity_sparse(
+            base_vector,
+            sparse_vectors[local_index],
+        )
     return [float(score or 0.0) for score in dense_scores]
 
 
-@lru_cache(maxsize=1)
-def get_exact_ingredient_map() -> Dict[str, str]:
-    rows = execute_query(f"SELECT ingredient_name FROM {INGREDIENTS_TABLE}")
-    mapping: Dict[str, str] = {}
-
-    for row in rows:
-        canonical = clean_name(row.get("ingredient_name"))
-        key = normalize_text(canonical)
-        if key and key not in mapping:
-            mapping[key] = canonical
-
-    return mapping
-
-
-@lru_cache(maxsize=1)
-def get_alias_candidates_map() -> Dict[str, List[str]]:
-    alias_table = get_ingredient_alias_table()
-    if not alias_table:
-        return {}
-
-    rows = execute_query(
-        f"""
-        SELECT ia.alias_name, i.ingredient_name
-        FROM {alias_table} ia
-        JOIN {INGREDIENTS_TABLE} i ON i.ingredient_id = ia.ingredient_id
-        WHERE ia.alias_name IS NOT NULL
-          AND trim(ia.alias_name) <> ''
-          AND i.ingredient_name IS NOT NULL
-          AND trim(i.ingredient_name) <> ''
-        """
+def get_nutrition_similarity(base_product: Dict, candidate_product: Dict) -> float:
+    return euclidean_similarity_dense(
+        build_nutrition_vector(base_product),
+        build_nutrition_vector(candidate_product),
     )
 
-    mapping: Dict[str, set] = {}
-    for row in rows:
-        alias_key = normalize_text(row.get("alias_name"))
-        canonical = clean_name(row.get("ingredient_name"))
-        if not alias_key or not canonical:
-            continue
-        mapping.setdefault(alias_key, set()).add(canonical)
 
-    return {
-        alias_key: sorted(values)
-        for alias_key, values in mapping.items()
-    }
-
-
-def looks_like_noise(text: str) -> bool:
-    tokens = text.split()
-    if not tokens:
-        return True
-    if len(tokens) >= 8:
-        return True
-    if sum(token in NOISE_TOKENS for token in tokens) >= 2:
-        return True
-    if any(char.isdigit() for char in text) and len(tokens) >= 5:
-        return True
-    return False
-
-
-def choose_fallback_canonical(raw: str, candidates: List[str]) -> Dict:
-    if candidates:
-        return {
-            "canonical": sorted(candidates)[0],
-            "source": "alias_table_fallback",
-            "is_noise": False,
-        }
-
-    normalized = normalize_text(raw)
-    if looks_like_noise(normalized):
-        return {
-            "canonical": "",
-            "source": "heuristic_noise",
-            "is_noise": True,
-        }
-
-    exact_map = get_exact_ingredient_map()
-    if normalized in exact_map:
-        return {
-            "canonical": exact_map[normalized],
-            "source": "exact_ingredient",
-            "is_noise": False,
-        }
-
-    return {
-        "canonical": clean_name(raw),
-        "source": "heuristic_clean",
-        "is_noise": False,
-    }
-
-
-def canonicalize_candidate_name(name: str, fallback_candidates: List[str]) -> str:
-    cleaned = clean_name(name)
-    key = normalize_text(cleaned)
-    exact_map = get_exact_ingredient_map()
-    if key in exact_map:
-        return exact_map[key]
-
-    for candidate in fallback_candidates:
-        if normalize_text(candidate) == key:
-            return candidate
-
-    return cleaned
-
-
-def resolve_ingredient_aliases(raw_values: Sequence[str]) -> Dict[str, Dict]:
-    exact_map = get_exact_ingredient_map()
-    alias_map = get_alias_candidates_map()
-    results: Dict[str, Dict] = {}
-    pending_llm: List[Dict[str, object]] = []
-    unique_values = list(dict.fromkeys(str(value).strip() for value in raw_values if str(value).strip()))
-    normalized_by_raw = {raw: normalize_text(raw) for raw in unique_values}
-    cached_entries = get_alias_cache_entries(normalized_by_raw.values())
-
-    for raw in unique_values:
-        normalized = normalized_by_raw[raw]
-        if not normalized:
-            results[raw] = {"canonical": "", "source": "empty", "is_noise": True}
-            continue
-
-        if normalized in exact_map:
-            results[raw] = {
-                "canonical": exact_map[normalized],
-                "source": "exact_ingredient",
-                "is_noise": False,
-            }
-            continue
-
-        cached = cached_entries.get(normalized)
-        if cached:
-            results[raw] = dict(cached)
-            continue
-
-        candidates = alias_map.get(normalized, [])
-        if len(candidates) == 1:
-            results[raw] = {
-                "canonical": candidates[0],
-                "source": "alias_table",
-                "is_noise": False,
-            }
-            continue
-
-        pending_llm.append(
-            {
-                "raw": raw,
-                "candidates": candidates,
-            }
-        )
-
-    if pending_llm and is_openai_available():
-        try:
-            llm_results = normalize_aliases_with_llm(pending_llm)
-        except OpenAIUnavailableError as exc:
-            logger.warning("LLM alias normalization disabled for this run: %s", exc)
-            llm_results = {}
-
-        for item in pending_llm:
-            raw = str(item["raw"])
-            if raw not in llm_results:
-                continue
-
-            llm_result = llm_results[raw]
-            canonical = str(llm_result.get("canonical") or "").strip()
-            if canonical:
-                canonical = canonicalize_candidate_name(canonical, list(item.get("candidates", [])))
-            results[raw] = {
-                "canonical": canonical,
-                "source": llm_result.get("source", "llm"),
-                "is_noise": bool(llm_result.get("is_noise")) or not canonical,
-            }
-
-    cache_updates: Dict[str, Dict] = {}
-    for item in pending_llm:
-        raw = str(item["raw"])
-        if raw in results:
-            cache_updates[normalized_by_raw[raw]] = dict(results[raw])
-            continue
-        results[raw] = choose_fallback_canonical(raw, list(item.get("candidates", [])))
-        cache_updates[normalized_by_raw[raw]] = dict(results[raw])
-
-    save_alias_cache_entries(cache_updates)
-
-    return results
-
-
-def build_ingredient_profile(product: Dict, alias_resolutions: Dict[str, Dict]) -> Dict:
-    raw_ingredients = get_top_ingredients(product, max_items=8)
-    normalized_ingredients: List[str] = []
-    seen = set()
-    sources = Counter()
-
-    for raw in raw_ingredients:
-        resolution = alias_resolutions.get(raw) or choose_fallback_canonical(raw, [])
-        canonical = str(resolution.get("canonical") or "").strip()
-        if not canonical:
-            continue
-
-        key = normalize_text(canonical)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        normalized_ingredients.append(canonical)
-        sources[str(resolution.get("source") or "unknown")] += 1
-
-    return {
-        "raw_ingredients": raw_ingredients,
-        "normalized_ingredients": normalized_ingredients,
-        "signature": ", ".join(normalized_ingredients),
-        "sources": dict(sources),
-    }
-
-
-def get_category_signature(product: Dict) -> str:
-    parts: List[str] = []
-    for cat in product.get("categories", []):
-        if isinstance(cat, str):
-            label = cat.strip()
-            if label:
-                parts.append(label)
-        elif isinstance(cat, dict):
-            parent = str(cat.get("parent") or "").strip()
-            child = str(cat.get("child") or "").strip()
-            if child:
-                parts.append(child)
-            if parent and child:
-                parts.append(f"{parent} {child}")
-    return " | ".join(dict.fromkeys(parts))
-
-
-def get_ingredient_overlap(base_profile: Dict, candidate_profile: Dict) -> float:
-    left = {normalize_text(value) for value in base_profile.get("normalized_ingredients", [])}
-    right = {normalize_text(value) for value in candidate_profile.get("normalized_ingredients", [])}
-    left.discard("")
-    right.discard("")
-
-    if not left or not right:
-        return 0.0
-
-    intersection = len(left.intersection(right))
-    union = len(left.union(right))
-    return intersection / union if union else 0.0
-
-
-def get_nutrition_similarity(base_product: Dict, candidate_product: Dict) -> float:
-    total = 0.0
-    count = 0
-
-    for key in NUTRIENT_KEYS:
-        try:
-            left = float(base_product.get(key))
-            right = float(candidate_product.get(key))
-        except (TypeError, ValueError):
-            continue
-
-        reference = max(abs(left), abs(right), 1.0)
-        score = max(0.0, 1.0 - (abs(left - right) / reference))
-        total += score
-        count += 1
-
-    if not count:
-        return 0.0
-    return total / count
-
-
-def get_category_hierarchy_score(base_product: Dict, candidate_product: Dict) -> float:
-    base_target = normalize_text(get_target_category(base_product))
-    if not base_target:
-        return 0.0
-
-    candidate_labels = {normalize_text(label) for label in get_category_labels(candidate_product)}
-    if base_target in candidate_labels:
+def get_category_hierarchy_score(base_context: Dict, candidate_context: Dict) -> float:
+    base_categories = set(base_context.get("categories", set()))
+    candidate_categories = set(candidate_context.get("categories", set()))
+    if base_categories.intersection(candidate_categories):
         return 1.0
 
-    base_parents = {normalize_text(label) for label in get_parent_category_labels(base_product)}
-    candidate_parents = {normalize_text(label) for label in get_parent_category_labels(candidate_product)}
+    base_parents = set(base_context.get("parents", set()))
+    candidate_parents = set(candidate_context.get("parents", set()))
     if base_parents.intersection(candidate_parents):
         return 0.7
 
-    base_tokens = set(tokenize_text(get_category_signature(base_product)))
-    candidate_tokens = set(tokenize_text(get_category_signature(candidate_product)))
-    if not base_tokens or not candidate_tokens:
-        return 0.0
+    base_ancestors = set(base_context.get("ancestors", set()))
+    candidate_ancestors = set(candidate_context.get("ancestors", set()))
+    if base_ancestors.intersection(candidate_ancestors):
+        return 0.4
 
-    overlap = len(base_tokens.intersection(candidate_tokens)) / len(base_tokens.union(candidate_tokens))
-    return overlap * 0.5
+    return 0.0
 
 
 def get_seed_query(product: Dict) -> str:
@@ -562,7 +612,7 @@ def merge_seed_candidates(groups: Sequence[List[Dict]], current_code: str, limit
 def get_similar_products(
     code: str,
     limit: int = 4,
-    candidate_pool: int = 40,
+    candidate_pool: int = 20,
 ) -> Optional[List[Dict]]:
     base_product = get_product_by_code(code)
     if not base_product:
@@ -586,69 +636,54 @@ def get_similar_products(
         return []
 
     products = [base_product, *candidate_products]
-    all_raw_ingredients: List[str] = []
-    for product in products:
-        all_raw_ingredients.extend(get_top_ingredients(product, max_items=8))
-
-    alias_resolutions = resolve_ingredient_aliases(all_raw_ingredients)
-    ingredient_profiles = {
-        str(product["code"]): build_ingredient_profile(product, alias_resolutions)
+    ordered_codes = [str(product.get("code") or "").strip() for product in products]
+    alias_map = get_product_aliases_map(ordered_codes, max_items=8)
+    normalized_terms_by_code = get_llm_normalized_terms_by_code(products, alias_map, max_items=8)
+    semantic_texts = {
+        str(product["code"]): build_semantic_text(
+            product,
+            alias_map.get(str(product["code"]), []),
+            normalized_terms_by_code.get(str(product["code"]), []),
+        )
         for product in products
     }
-
-    ingredient_signature_texts = [
-        ingredient_profiles[str(product["code"])]["signature"]
-        for product in candidate_products
-    ]
-    category_signature_texts = [
-        get_category_signature(product)
-        for product in candidate_products
-    ]
-
-    base_ingredient_signature = ingredient_profiles[str(base_product["code"])]["signature"]
-    base_category_signature = get_category_signature(base_product)
-
-    ingredient_vector_scores = compute_text_similarities(
-        base_ingredient_signature,
-        ingredient_signature_texts,
-    )
-    category_vector_scores = compute_text_similarities(
-        base_category_signature,
-        category_signature_texts,
+    category_context = build_product_category_context(products)
+    base_code = str(base_product["code"])
+    semantic_scores = compute_text_similarities(
+        semantic_texts[base_code],
+        [semantic_texts[str(product["code"])] for product in candidate_products],
     )
 
     ranked: List[Dict] = []
     for index, candidate_product in enumerate(candidate_products):
-        candidate_profile = ingredient_profiles[str(candidate_product["code"])]
-        ingredient_overlap = get_ingredient_overlap(
-            ingredient_profiles[str(base_product["code"])],
-            candidate_profile,
-        )
-        ingredient_similarity = max(
-            ingredient_overlap,
-            (0.65 * ingredient_vector_scores[index]) + (0.35 * ingredient_overlap),
-        )
+        candidate_code = str(candidate_product["code"])
+        semantic_similarity = semantic_scores[index]
         nutrition_similarity = get_nutrition_similarity(base_product, candidate_product)
-        category_similarity = max(
-            category_vector_scores[index],
-            get_category_hierarchy_score(base_product, candidate_product),
+        category_similarity = get_category_hierarchy_score(
+            category_context.get(base_code, {}),
+            category_context.get(candidate_code, {}),
         )
-        overall_similarity = (
-            (0.45 * ingredient_similarity)
-            + (0.35 * nutrition_similarity)
-            + (0.20 * category_similarity)
-        )
+        preliminary_similarity = (
+            semantic_similarity
+            + nutrition_similarity
+            + category_similarity
+        ) / 3.0
 
         enriched = dict(candidate_product)
         enriched["category_label"] = get_target_category(candidate_product)
-        enriched["top_ingredients"] = candidate_profile["normalized_ingredients"][:5]
-        enriched["normalized_ingredients"] = candidate_profile["normalized_ingredients"]
-        enriched["alias_sources"] = candidate_profile["sources"]
-        enriched["ingredient_similarity_pct"] = round(ingredient_similarity * 100)
+        enriched["top_ingredients"] = get_top_ingredients(candidate_product, max_items=5)
+        enriched["normalized_ingredients"] = get_top_ingredients(candidate_product, max_items=8)
+        enriched["ingredient_roles"] = []
+        enriched["alias_sources"] = {
+            "product_aliases": len(alias_map.get(candidate_code, [])),
+            "llm_normalized_terms": len(normalized_terms_by_code.get(candidate_code, [])),
+        }
+        enriched["role_sources"] = {}
+        enriched["ingredient_similarity_pct"] = round(semantic_similarity * 100)
         enriched["nutriment_similarity_pct"] = round(nutrition_similarity * 100)
         enriched["category_similarity_pct"] = round(category_similarity * 100)
-        enriched["overall_similarity_pct"] = round(overall_similarity * 100)
-        enriched["similarity_score"] = round(overall_similarity, 4)
+        enriched["overall_similarity_pct"] = round(preliminary_similarity * 100)
+        enriched["similarity_score"] = round(preliminary_similarity, 4)
         ranked.append(enriched)
 
     ranked.sort(
@@ -657,4 +692,5 @@ def get_similar_products(
             str(item.get("product_name") or ""),
         )
     )
+
     return ranked[:limit]

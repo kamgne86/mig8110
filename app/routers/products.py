@@ -34,10 +34,10 @@ def list_similar_products(
     code: str,
     limit: int = Query(4, ge=1, le=12, description="Nombre maximum de produits similaires"),
     candidate_pool: int = Query(
-        40,
+        20,
         ge=8,
         le=120,
-        description="Taille du pool de candidats avant reranking vectoriel",
+        description="Taille du pool de candidats avant classement final",
     ),
 ):
     items = get_similar_products(code, limit=limit, candidate_pool=candidate_pool)

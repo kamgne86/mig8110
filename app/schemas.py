@@ -69,7 +69,9 @@ class SimilarProductItem(BaseModel):
     categories: list[CategorySchema] = []
     ingredients: list[str] = []
     normalized_ingredients: list[str] = []
+    ingredient_roles: list[str] = []
     alias_sources: dict[str, int] = {}
+    role_sources: dict[str, int] = {}
     similarity_score: float
     ingredient_similarity_pct: int
     nutriment_similarity_pct: int
