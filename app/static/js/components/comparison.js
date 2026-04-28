@@ -19,13 +19,19 @@ async function comparerProduits() {
     return;
   }
 
-  const codes = checked.map(c => c.value);
+  await compareProductCodes(checked.map(c => c.value));
+}
 
+async function compareProductCodes(codes) {
   let details;
   try {
     details = await Promise.all(codes.map(code => fetchProduct(code)));
   } catch (err) {
-    showError('Erreur lors de la comparaison : ' + err.message);
+    if (typeof showError === 'function') {
+      showError('Erreur lors de la comparaison : ' + err.message);
+    } else {
+      alert('Erreur lors de la comparaison : ' + err.message);
+    }
     return;
   }
 

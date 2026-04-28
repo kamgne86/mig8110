@@ -206,3 +206,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local caches
+alias_normalization_cache.json
+ingredient_role_cache.json
