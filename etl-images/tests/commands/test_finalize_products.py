@@ -39,7 +39,7 @@ class TestFinalizeProducts:
             "code": ["001"],
             "product_name": ["Maple Syrup"],
             "categories_tags": [["en:syrups"]],
-            "ingredients_tags": [["en:sugar"]],
+            "ingredients": ['[{"id": "en:sugar", "text": "Sugar"}]'],
         })
         with patch("commands.finalize_products.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
@@ -51,13 +51,13 @@ class TestFinalizeProducts:
             uploaded_df = mock_s3_instance.upload_dataframe.call_args[0][0]
             assert "categories_tags" not in uploaded_df.columns
 
-    def test_ingredients_tags_dropped(self, mock_env_vars):
-        """ingredients_tags est supprimée du parquet de sortie."""
+    def test_ingredients_dropped(self, mock_env_vars):
+        """ingredients (colonne JSON) est supprimée du parquet de sortie."""
         df = pd.DataFrame({
             "code": ["001"],
             "product_name": ["Maple Syrup"],
             "categories_tags": [["en:syrups"]],
-            "ingredients_tags": [["en:sugar"]],
+            "ingredients": ['[{"id": "en:sugar", "text": "Sugar"}]'],
         })
         with patch("commands.finalize_products.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
@@ -67,7 +67,7 @@ class TestFinalizeProducts:
             ]
             handle("input.parquet", "cp.parquet", "products.parquet")
             uploaded_df = mock_s3_instance.upload_dataframe.call_args[0][0]
-            assert "ingredients_tags" not in uploaded_df.columns
+            assert "ingredients" not in uploaded_df.columns
 
     def test_other_columns_preserved(self, mock_env_vars):
         """Les autres colonnes (code, product_name, ingredients_n, ...) sont conservées."""
@@ -76,7 +76,7 @@ class TestFinalizeProducts:
             "product_name": ["Maple Syrup"],
             "ingredients_n": [5],
             "categories_tags": [["en:syrups"]],
-            "ingredients_tags": [["en:sugar"]],
+            "ingredients": ['[{"id": "en:sugar", "text": "Sugar"}]'],
         })
         with patch("commands.finalize_products.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
@@ -91,7 +91,7 @@ class TestFinalizeProducts:
             assert "ingredients_n" in uploaded_df.columns
 
     def test_columns_absent_do_not_raise(self, mock_env_vars):
-        """Si categories_tags ou ingredients_tags sont absentes, aucune erreur n'est levée."""
+        """Si categories_tags ou ingredients sont absentes, aucune erreur n'est levée."""
         df = pd.DataFrame({"code": ["001"], "product_name": ["Maple Syrup"]})
         with patch("commands.finalize_products.S3FileHandler") as mock_s3:
             mock_s3_instance = Mock()
