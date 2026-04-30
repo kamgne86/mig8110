@@ -4,6 +4,8 @@ const state = {
   allProducts: [],
   activeGrades: new Set(),
   searchMode: 'product',
+  categories: [],
+  categoriesLoaded: false,
   tagsearch: null,
   tagsearchType: null,
   radarChartInstance: null,

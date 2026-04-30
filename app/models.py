@@ -244,19 +244,57 @@ def get_all_categories() -> List[Dict]:
     ancestor_categories_table = get_ancestor_categories_table()
     if ancestor_categories_table:
         sql = f"""
-            SELECT c.category_id, c.category_name, a.category_id_parent AS parent_category_id
+            SELECT
+                c.category_id,
+                c.category_name,
+                a.category_id_parent AS parent_category_id,
+                p.category_name AS parent_name
             FROM {CATEGORIES_TABLE} c
             LEFT JOIN {ancestor_categories_table} a
               ON c.category_id = a.category_id AND a.distance = 1
+            LEFT JOIN {CATEGORIES_TABLE} p
+              ON a.category_id_parent = p.category_id
             ORDER BY c.category_name
         """
     else:
         sql = f"""
-            SELECT category_id, category_name, NULL::BIGINT AS parent_category_id
+            SELECT
+                category_id,
+                category_name,
+                NULL::BIGINT AS parent_category_id,
+                NULL::VARCHAR AS parent_name
             FROM {CATEGORIES_TABLE}
             ORDER BY category_name
         """
-    return execute_query(sql)
+    rows = execute_query(sql)
+
+    categories: List[Dict] = []
+    seen_labels = set()
+    for row in rows:
+        raw_name = str(row.get("category_name") or "").strip()
+        label = clean_name(raw_name)
+        if not label:
+            continue
+        if not re.search(r"[a-zA-Z]", label):
+            continue
+
+        raw_parent_name = str(row.get("parent_name") or "").strip()
+        parent_label = clean_name(raw_parent_name) if raw_parent_name else ""
+        display_label = f"{parent_label} > {label}" if parent_label else label
+
+        normalized_label = display_label.casefold()
+        if normalized_label in seen_labels:
+            continue
+        seen_labels.add(normalized_label)
+
+        item = dict(row)
+        item["label"] = label
+        item["parent_label"] = parent_label or None
+        item["display_label"] = display_label
+        categories.append(item)
+
+    categories.sort(key=lambda item: str(item.get("display_label") or "").casefold())
+    return categories
 
 
 def get_products_by_codes(codes: List[str]) -> List[Dict]:
@@ -291,23 +329,23 @@ def get_products_by_codes(codes: List[str]) -> List[Dict]:
                 WITH category_links AS (
                     {category_links_sql}
                 )
-                SELECT DISTINCT cl.code, c.category_name, a.category_id_parent,
-                       p.category_name AS parent_name
+                SELECT cl.code, c.category_id, c.category_name, a.distance,
+                       a.category_id_parent, p.category_name AS parent_name
                 FROM category_links cl
                 JOIN {CATEGORIES_TABLE} c ON cl.category_id = c.category_id
                 LEFT JOIN {ancestor_categories_table} a
-                  ON c.category_id = a.category_id AND a.distance = 1
+                  ON c.category_id = a.category_id
                 LEFT JOIN {CATEGORIES_TABLE} p ON a.category_id_parent = p.category_id
                 WHERE cl.code IN ({placeholders})
-                ORDER BY cl.code, c.category_name
+                ORDER BY cl.code, c.category_name, a.distance DESC NULLS LAST, p.category_name
             """
         else:
             cat_sql = f"""
                 WITH category_links AS (
                     {category_links_sql}
                 )
-                SELECT DISTINCT cl.code, c.category_name, NULL AS parent_category_id,
-                       NULL AS parent_name
+                SELECT DISTINCT cl.code, c.category_id, c.category_name, NULL AS distance,
+                       NULL AS parent_category_id, NULL AS parent_name
                 FROM category_links cl
                 JOIN {CATEGORIES_TABLE} c ON cl.category_id = c.category_id
                 WHERE cl.code IN ({placeholders})
@@ -315,34 +353,60 @@ def get_products_by_codes(codes: List[str]) -> List[Dict]:
             """
 
         cat_result = conn.execute(cat_sql, ordered_codes)
-        seen_categories = {product_code: set() for product_code in product_map}
+        category_groups = {product_code: {} for product_code in product_map}
 
-        for product_code, cat_name, parent_id, parent_name in cat_result.fetchall():
+        for product_code, category_id, cat_name, distance, parent_id, parent_name in cat_result.fetchall():
             product_code = str(product_code)
             if product_code not in product_map:
                 continue
 
             cleaned_cat = clean_name(cat_name)
-            cleaned_parent = clean_name(parent_name) if parent_name else None
-            category_key = (cleaned_parent, cleaned_cat)
-            if category_key in seen_categories[product_code]:
+            if not cleaned_cat:
                 continue
-            seen_categories[product_code].add(category_key)
 
-            if parent_id and cleaned_parent:
+            group_key = str(category_id if category_id is not None else cleaned_cat)
+            category_entry = category_groups[product_code].setdefault(
+                group_key,
+                {
+                    "child": cleaned_cat,
+                    "parent": None,
+                    "ancestors": {},
+                },
+            )
+
+            cleaned_parent = clean_name(parent_name) if parent_name else None
+            if cleaned_parent and distance is not None:
+                category_entry["ancestors"][int(distance)] = cleaned_parent
+                if int(distance) == 1 and not category_entry["parent"]:
+                    category_entry["parent"] = cleaned_parent
+
+        for product_code in ordered_codes:
+            if product_code not in product_map:
+                continue
+
+            seen_categories = set()
+            for category_entry in category_groups.get(product_code, {}).values():
+                ancestors = [
+                    label
+                    for _, label in sorted(
+                        category_entry["ancestors"].items(),
+                        key=lambda item: item[0],
+                        reverse=True,
+                    )
+                    if label
+                ]
+                display_parts = ancestors + [category_entry["child"]]
+                display_label = " > ".join(dict.fromkeys(display_parts))
+                normalized_display = display_label.casefold()
+                if not display_label or normalized_display in seen_categories:
+                    continue
+                seen_categories.add(normalized_display)
+
                 product_map[product_code]["categories"].append(
                     {
-                        "parent": cleaned_parent,
-                        "child": cleaned_cat,
-                        "display": f"{cleaned_parent} > {cleaned_cat}",
-                    }
-                )
-            else:
-                product_map[product_code]["categories"].append(
-                    {
-                        "parent": None,
-                        "child": cleaned_cat,
-                        "display": cleaned_cat,
+                        "parent": category_entry["parent"],
+                        "child": category_entry["child"],
+                        "display": display_label,
                     }
                 )
 

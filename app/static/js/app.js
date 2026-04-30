@@ -1,9 +1,3 @@
-// ─── Point d'entrée — FoodHealth Advisor ─────────────────────────────────────
-// Ce fichier orchestre les modules : il branche les events et lance l'init.
-// Toute la logique métier est dans les fichiers components/ et pages/.
-
-// ─── Helpers UI ──────────────────────────────────────────────────────────────
-
 function showLoading() {
   document.getElementById('results').innerHTML = '<p class="empty-msg">Recherche en cours...</p>';
   document.getElementById('stats').style.display = 'none';
@@ -19,26 +13,126 @@ function hideError() {
   document.getElementById('error').style.display = 'none';
 }
 
-// ─── Fetch & Render ──────────────────────────────────────────────────────────
+function getSearchControls() {
+  return {
+    searchType: document.getElementById('searchType'),
+    searchName: document.getElementById('searchName'),
+    searchCategory: document.getElementById('searchCategory'),
+    searchBrand: document.getElementById('searchBrand'),
+  };
+}
+
+function setCategorySelectValue(value) {
+  const { searchCategory } = getSearchControls();
+  if (!searchCategory) return;
+
+  const normalizedValue = String(value || '').trim().toLowerCase();
+  if (!normalizedValue) {
+    searchCategory.value = '';
+    return;
+  }
+
+  const match = Array.from(searchCategory.options).find(
+    option =>
+      String(option.value || '').trim().toLowerCase() === normalizedValue
+      || String(option.dataset.label || '').trim().toLowerCase() === normalizedValue
+      || String(option.textContent || '').trim().toLowerCase() === normalizedValue
+  );
+  searchCategory.value = match ? match.value : '';
+}
+
+function syncSearchModeUI() {
+  const { searchType, searchName, searchCategory } = getSearchControls();
+  const mode = searchType ? searchType.value : 'product';
+
+  state.searchMode = mode;
+  state.tagsearchType = mode === 'product' ? null : mode;
+
+  if (!searchName || !searchCategory) return;
+
+  if (mode === 'category') {
+    searchName.style.display = 'none';
+    searchName.disabled = true;
+    searchCategory.style.display = '';
+    searchCategory.disabled = false;
+    if (!searchCategory.value && searchName.value) {
+      setCategorySelectValue(searchName.value);
+    }
+    return;
+  }
+
+  searchCategory.style.display = 'none';
+  searchCategory.disabled = true;
+  searchName.style.display = '';
+  searchName.disabled = false;
+  searchName.placeholder =
+    mode === 'ingredient'
+      ? 'Rechercher par ingredient ...'
+      : 'Rechercher par nom produit ...';
+}
+
+async function loadCategoryOptions() {
+  if (state.categoriesLoaded) {
+    syncSearchModeUI();
+    return;
+  }
+
+  const { searchCategory, searchName } = getSearchControls();
+  if (!searchCategory) return;
+
+  try {
+    const categories = await fetchCategories();
+    state.categories = Array.isArray(categories) ? categories : [];
+    state.categoriesLoaded = true;
+
+    searchCategory.innerHTML = '';
+    const placeholderOption = document.createElement('option');
+    placeholderOption.value = '';
+    placeholderOption.textContent = 'Choisir une categorie...';
+    searchCategory.appendChild(placeholderOption);
+
+    for (const category of state.categories) {
+      const label = String(category.label || category.category_name || '').trim();
+      const displayLabel = String(category.display_label || label).trim();
+      const rawValue = String(category.category_name || label).trim();
+      if (!label || !rawValue) continue;
+      const option = document.createElement('option');
+      option.value = rawValue;
+      option.dataset.label = label;
+      option.textContent = displayLabel;
+      searchCategory.appendChild(option);
+    }
+
+    if (state.searchMode === 'category') {
+      setCategorySelectValue(state.tagsearch || searchName.value);
+    }
+  } catch (err) {
+    console.error('Impossible de charger les categories', err);
+  } finally {
+    syncSearchModeUI();
+  }
+}
 
 function initializeFromURL() {
   const params = new URLSearchParams(window.location.search);
   const ingredient = params.get('ingredient');
   const category = params.get('category');
-  const searchType = document.getElementById('searchType');
+  const { searchType, searchName } = getSearchControls();
 
   if (ingredient) {
     state.tagsearch = ingredient;
     state.tagsearchType = 'ingredient';
     state.searchMode = 'ingredient';
-    document.getElementById('searchName').value = ingredient;
+    searchName.value = ingredient;
     if (searchType) searchType.value = 'ingredient';
     return true;
-  } else if (category) {
+  }
+
+  if (category) {
     state.tagsearch = category;
     state.tagsearchType = 'category';
     state.searchMode = 'category';
-    document.getElementById('searchName').value = category;
+    searchName.value = category;
     if (searchType) searchType.value = 'category';
     return true;
   }
@@ -48,13 +142,22 @@ function initializeFromURL() {
   return false;
 }
 
+function getActiveSearchValue() {
+  const { searchType, searchName, searchCategory } = getSearchControls();
+  const mode = searchType ? searchType.value : 'product';
+  return mode === 'category'
+    ? searchCategory.value.trim()
+    : searchName.value.trim();
+}
+
 async function fetchAndRender() {
-  const name  = document.getElementById('searchName').value.trim();
-  const brand = document.getElementById('searchBrand').value.trim();
-  const searchType = document.getElementById('searchType');
+  const { searchType, searchBrand } = getSearchControls();
+  const name = getActiveSearchValue();
+  const brand = searchBrand.value.trim();
   const searchMode = searchType ? searchType.value : 'product';
 
   state.searchMode = searchMode;
+  state.tagsearch = name || null;
   state.tagsearchType = searchMode === 'product' ? null : searchMode;
 
   showLoading();
@@ -76,35 +179,37 @@ async function fetchAndRender() {
     state.allProducts = await fetchProducts(params);
     applyFilters();
   } catch (err) {
-    showError("Erreur API : " + err.message + "<br>Vérifiez que l'API FastAPI est démarrée.");
+    showError('Erreur API : ' + err.message + '<br>Verifiez que l API FastAPI est demarree.');
   }
 }
 
-// ─── Init ────────────────────────────────────────────────────────────────────
-
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const hasUrlParams = initializeFromURL();
-  const searchType = document.getElementById('searchType');
+  const { searchType, searchCategory, searchBrand } = getSearchControls();
 
-  // Filtres Nutri-Score
   initNutriScoreFilters();
+  syncSearchModeUI();
+  await loadCategoryOptions();
 
   if (searchType) {
-    searchType.addEventListener('change', () => {
-      state.searchMode = searchType.value;
-      state.tagsearchType = searchType.value === 'product' ? null : searchType.value;
+    searchType.addEventListener('change', async () => {
+      syncSearchModeUI();
+      if (searchType.value === 'category' && !state.categoriesLoaded) {
+        await loadCategoryOptions();
+      }
     });
   }
 
-  // Recherche au Enter
-  document.addEventListener('keypress', e => {
-    if (e.key === 'Enter') fetchAndRender();
+  if (searchCategory) {
+    searchCategory.addEventListener('change', fetchAndRender);
+  }
+
+  document.addEventListener('keypress', event => {
+    if (event.key === 'Enter') fetchAndRender();
   });
 
-  // Recherche par marque avec debounce
-  document.getElementById('searchBrand').addEventListener('input', debounce(fetchAndRender, 500));
+  searchBrand.addEventListener('input', debounce(fetchAndRender, 500));
 
-  // Si on arrive avec un paramètre URL, lancer la recherche
   if (hasUrlParams) {
     fetchAndRender();
   }
