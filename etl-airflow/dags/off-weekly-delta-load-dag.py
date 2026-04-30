@@ -41,7 +41,7 @@ Pipeline (par fichier delta, 1 task group instance par fichier) :
     load_ancetre_categories: Upsert silver.ancetre_categories — DELETE + INSERT par (category_id, category_id_parent)
     load_ingredients       : Upsert silver.ingredients — DELETE + INSERT par ingredient_id
     load_product_ingredients: Upsert silver.product_ingredients — DELETE + INSERT par code
-    load_sous_ingredients  : Upsert silver.sous_ingredients — DELETE + INSERT par ingredient_id
+    load_sous_ingredients  : Upsert silver.sous_ingredients — DELETE + INSERT par code
     load_ingredient_alias  : Upsert silver.ingredient_alias — DELETE + INSERT par ingredient_id
 
 Outputs S3 (bucket: bi-dev) :
@@ -67,7 +67,7 @@ Output MotherDuck (base: off) :
     silver.ancetre_categories     : Table de fermeture des ancêtres — upsert sur `(category_id, category_id_parent)`
     silver.ingredients            : Référentiel OFF ingrédients — upsert sur `ingredient_id`
     silver.product_ingredients    : Jonction produit ↔ ingrédient niveau 1 — upsert sur `code`
-    silver.sous_ingredients       : Composition des ingrédients composés niveau 2+ — upsert sur `ingredient_id`
+    silver.sous_ingredients       : Composition des ingrédients composés niveau 2+ — upsert sur `code`
     silver.ingredient_alias       : Variantes textuelles d'un ingrédient — upsert sur `ingredient_id`
     monitoring.pipeline_runs      : Métriques d'exécution (records_in, records_out, rejection_rate)
 """
@@ -546,7 +546,7 @@ with dag:
         )
 
         # ── load_sous_ingredients ────────────────────────────────────────────
-        # Upsert silver.sous_ingredients — DELETE + INSERT par ingredient_id.
+        # Upsert silver.sous_ingredients — DELETE + INSERT par code.
         load_sous_ingredients = CustomKubernetesPodOperator(
             dag=dag,
             task_id='load_sous_ingredients',
@@ -557,7 +557,7 @@ with dag:
                 "--input_file_key", sous_ingredients_key,
                 "--table_name",     SOUS_INGREDIENTS_TABLE,
                 "--schema_name",    f"{DATABASE_NAME}.{SILVER_SCHEMA}",
-                "--key_column",     "ingredient_id",
+                "--key_column",     "code",
             ],
             env_vars={**s3_env_vars, **duckdb_env_vars},
             container_resources=RESOURCES_LIGHT,
