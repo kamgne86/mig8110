@@ -171,6 +171,19 @@ function renderCategoryLinks(categories) {
       if (typeof cat === 'string') {
         const label = String(cat || '').trim();
         if (!label) return '';
+        if (label.includes('>')) {
+          const parts = label.split('>').map(p => p.trim()).filter(Boolean);
+          const visualPath = parts
+            .map((part, index) => {
+              const separator = index < parts.length - 1
+                ? '<span class="cat-separator">&gt;</span>'
+                : '';
+              const partClass = index === parts.length - 1 ? 'cat-child' : 'cat-parent';
+              return `<a href="/static/index.html?category=${encodeURIComponent(part)}" class="tag-link category-segment ${partClass}">${escHtml(part)}</a>${separator}`;
+            })
+            .join('');
+          return `<span class="category-path">${visualPath}</span>`;
+        }
         return `<a href="/static/index.html?category=${encodeURIComponent(label)}" class="tag-link">${escHtml(label)}</a>`;
       }
 

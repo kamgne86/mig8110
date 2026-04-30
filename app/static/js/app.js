@@ -50,23 +50,14 @@ function syncSearchModeUI() {
 
   if (!searchName || !searchCategory) return;
 
-  if (mode === 'category') {
-    searchName.style.display = 'none';
-    searchName.disabled = true;
-    searchCategory.style.display = '';
-    searchCategory.disabled = false;
-    if (!searchCategory.value && searchName.value) {
-      setCategorySelectValue(searchName.value);
-    }
-    return;
-  }
-
   searchCategory.style.display = 'none';
   searchCategory.disabled = true;
   searchName.style.display = '';
   searchName.disabled = false;
   searchName.placeholder =
-    mode === 'ingredient'
+    mode === 'category'
+      ? 'Rechercher par categorie ...'
+      : mode === 'ingredient'
       ? 'Rechercher par ingredient ...'
       : 'Rechercher par nom produit ...';
 }
@@ -143,11 +134,8 @@ function initializeFromURL() {
 }
 
 function getActiveSearchValue() {
-  const { searchType, searchName, searchCategory } = getSearchControls();
-  const mode = searchType ? searchType.value : 'product';
-  return mode === 'category'
-    ? searchCategory.value.trim()
-    : searchName.value.trim();
+  const { searchName } = getSearchControls();
+  return searchName.value.trim();
 }
 
 async function fetchAndRender() {
