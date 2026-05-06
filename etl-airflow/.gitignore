@@ -48,6 +48,10 @@ coverage.xml
 *.cover
 *.py.cover
 .hypothesis/
+
+# Kubernetes configuration
+include/*
+!include/.gitkeep
 .pytest_cache/
 cover/
 
